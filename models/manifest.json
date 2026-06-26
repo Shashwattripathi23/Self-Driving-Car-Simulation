@@ -1,0 +1,9 @@
+[
+  {
+    "label": "smoke_test",
+    "timestamp": "20260627_013201",
+    "episode": 0,
+    "best_reward": -1000000000.0,
+    "file": "ppo_smoke_test.npz"
+  }
+]
