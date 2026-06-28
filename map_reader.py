@@ -501,79 +501,166 @@ _training_state_path = None    # shared JSON for dashboard
 
 
 def _ask_model_version():
-    """Tkinter dialog: choose Fresh or Recent model. Returns PPOAgent or None."""
+    """
+    Tkinter dialog: pick any saved checkpoint from the full manifest,
+    or start a Fresh Model.  Returns a PPOAgent or None (cancel).
+    """
     if not HAS_MODEL:
         messagebox.showerror("Missing dependency",
                              "numpy is required for the AI model.\n"
                              "Run: pip install numpy")
         return None
 
-    latest = get_latest_model_path()
-    root   = tk.Tk()
+    from model import load_manifest as _load_mf
+    manifest = _load_mf()          # list of dicts, oldest → newest
+
+    root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
 
-    choice = {"val": None}
+    chosen_path = {"val": None}    # None = cancelled, "__fresh__" = new agent
 
-    def pick(v):
-        choice["val"] = v
-        dlg.destroy()
+    # ── colour palette ──
+    BG      = "#0d0d16"
+    BG_CARD = "#14141f"
+    BG_ROW  = "#1a1a2e"
+    BG_SEL  = "#1e3a6e"
+    FG_MAIN = "#eeeef8"
+    FG_HINT = "#6b7280"
+    FG_BLUE = "#3285e0"
+    BORDER  = "#2a2a40"
 
     dlg = tk.Toplevel(root)
-    dlg.title("AI Model Version")
-    dlg.configure(bg="#0d0d16")
-    dlg.resizable(False, False)
+    dlg.title("Load AI Checkpoint")
+    dlg.configure(bg=BG)
+    dlg.resizable(True, True)
+    dlg.minsize(560, 340)
     dlg.grab_set()
 
-    tk.Label(dlg, text="Select AI model version",
-             font=("Consolas", 11, "bold"),
-             bg="#0d0d16", fg="#eeeef8").pack(pady=(18, 6), padx=24)
+    # ── header ──
+    tk.Label(dlg, text="SELECT CHECKPOINT",
+             font=("Consolas", 12, "bold"),
+             bg=BG, fg=FG_MAIN).pack(pady=(16, 2), padx=20, anchor="w")
+    tk.Label(dlg, text="Pick a saved version to resume, or start fresh.",
+             font=("Consolas", 9), bg=BG, fg=FG_HINT).pack(padx=20, anchor="w")
+    tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X, padx=14, pady=8)
 
-    if latest:
-        import json as _j
-        try:
-            with open(latest) as _f:
-                _d = _j.load(_f)
-            info = f"Episode {_d.get('episode','?')}  |  best {_d.get('best_reward',0):.1f}"
-        except Exception:
-            info = os.path.basename(latest)
-        tk.Label(dlg, text=f"Recent: {info}",
-                 font=("Consolas", 9), bg="#0d0d16", fg="#9ca3af").pack(pady=2)
-        btn_recent = tk.Button(dlg, text="Load Recent Model",
-                               font=("Consolas", 10, "bold"),
-                               bg="#3285e0", fg="white", relief=tk.FLAT,
-                               cursor="hand2", padx=14, pady=8,
-                               command=lambda: pick("recent"))
-        btn_recent.pack(fill=tk.X, padx=24, pady=(10, 4))
+    # ── column headers ──
+    hdr = tk.Frame(dlg, bg=BG_CARD)
+    hdr.pack(fill=tk.X, padx=14)
+    for text, w in [("#", 3), ("Label", 22), ("Episode", 9),
+                    ("Best Reward", 12), ("Saved at", 16)]:
+        tk.Label(hdr, text=text, font=("Consolas", 8, "bold"),
+                 bg=BG_CARD, fg=FG_HINT,
+                 width=w, anchor="w").pack(side=tk.LEFT, padx=(4, 0), pady=3)
+
+    # ── listbox ──
+    lb_frame = tk.Frame(dlg, bg=BG)
+    lb_frame.pack(fill=tk.BOTH, expand=True, padx=14)
+
+    sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
+    lb = tk.Listbox(lb_frame, yscrollcommand=sb.set,
+                    font=("Consolas", 10),
+                    bg=BG_ROW, fg=FG_MAIN,
+                    selectbackground=BG_SEL, selectforeground=FG_MAIN,
+                    highlightbackground=BORDER, highlightthickness=1,
+                    activestyle="none",
+                    height=min(max(len(manifest), 3), 10))
+    sb.config(command=lb.yview)
+    sb.pack(side=tk.RIGHT, fill=tk.Y)
+    lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    # populate newest-first
+    entries = list(reversed(manifest))
+    if entries:
+        for i, m in enumerate(entries):
+            ep   = m.get("episode",     "?")
+            best = m.get("best_reward", "?")
+            ts   = m.get("timestamp",   "")
+            lbl  = m.get("label",       m.get("file", "?"))
+            best_str = (f"{float(best):>10.2f}"
+                        if isinstance(best, (int, float)) else f"{'?':>10}")
+            row = f"  {i+1:<3}  {lbl:<24}  ep={str(ep):<7}  {best_str}   {ts}"
+            lb.insert(tk.END, row)
+        lb.selection_set(0)
     else:
-        tk.Label(dlg, text="No saved models found.",
-                 font=("Consolas", 9), bg="#0d0d16", fg="#6b7280").pack(pady=2)
+        lb.insert(tk.END, "   (no saved checkpoints found)")
+        lb.config(state=tk.DISABLED)
 
-    btn_fresh = tk.Button(dlg, text="Fresh Model",
-                          font=("Consolas", 10, "bold"),
-                          bg="#1e7a50", fg="white", relief=tk.FLAT,
-                          cursor="hand2", padx=14, pady=8,
-                          command=lambda: pick("fresh"))
-    btn_fresh.pack(fill=tk.X, padx=24, pady=4)
+    # ── file path hint below list ──
+    info_var = tk.StringVar(
+        value=f"File: {entries[0].get('file','')}" if entries else "")
+    tk.Label(dlg, textvariable=info_var,
+             font=("Consolas", 8), bg=BG, fg=FG_HINT,
+             anchor="w").pack(fill=tk.X, padx=20, pady=(2, 0))
 
-    tk.Button(dlg, text="Cancel",
-              font=("Consolas", 9), bg="#1a1a2e", fg="#9ca3af",
-              relief=tk.FLAT, cursor="hand2",
-              command=lambda: pick(None)).pack(pady=(2, 14))
+    def on_select(evt=None):
+        sel = lb.curselection()
+        if sel and entries:
+            info_var.set(f"File: {entries[sel[0]].get('file','')}")
 
-    dlg.protocol("WM_DELETE_WINDOW", lambda: pick(None))
+    lb.bind("<<ListboxSelect>>", on_select)
+
+    # ── buttons ──
+    tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X, padx=14, pady=6)
+    btn_row = tk.Frame(dlg, bg=BG)
+    btn_row.pack(fill=tk.X, padx=14, pady=(0, 14))
+
+    def do_load():
+        sel = lb.curselection()
+        if not sel or not entries:
+            return
+        m    = entries[sel[0]]
+        path = os.path.join(MODELS_DIR, m["file"])
+        if not os.path.exists(path):
+            messagebox.showerror("Not Found",
+                                 f"File not found:\n{path}", parent=dlg)
+            return
+        chosen_path["val"] = path
+        dlg.destroy()
+
+    def do_fresh():
+        chosen_path["val"] = "__fresh__"
+        dlg.destroy()
+
+    def do_cancel():
+        dlg.destroy()
+
+    lb.bind("<Double-Button-1>", lambda e: do_load())
+
+    tk.Button(btn_row, text="⬇  Load Selected",
+              font=("Consolas", 10, "bold"),
+              bg=FG_BLUE, fg="white", relief=tk.FLAT,
+              cursor="hand2", padx=12, pady=7,
+              state=tk.NORMAL if entries else tk.DISABLED,
+              command=do_load).pack(side=tk.LEFT, padx=(0, 6))
+
+    tk.Button(btn_row, text="✦  Fresh Model",
+              font=("Consolas", 10, "bold"),
+              bg="#1e7a50", fg="white", relief=tk.FLAT,
+              cursor="hand2", padx=12, pady=7,
+              command=do_fresh).pack(side=tk.LEFT, padx=(0, 6))
+
+    tk.Button(btn_row, text="Cancel",
+              font=("Consolas", 9), bg="#1a1a2e", fg=FG_HINT,
+              relief=tk.FLAT, cursor="hand2", padx=10, pady=7,
+              command=do_cancel).pack(side=tk.RIGHT)
+
+    dlg.protocol("WM_DELETE_WINDOW", do_cancel)
     root.wait_window(dlg)
     root.destroy()
 
-    if choice["val"] == "fresh" or (choice["val"] == "recent" and not latest):
-        return PPOAgent()
-    elif choice["val"] == "recent" and latest:
-        try:
-            return PPOAgent.load_version(latest)
-        except Exception as e:
-            messagebox.showerror("Load Error", str(e))
-            return PPOAgent()
-    return None   # cancelled
+    val = chosen_path["val"]
+    if val is None:
+        return None                   # cancelled
+    if val == "__fresh__":
+        return PPOAgent()             # brand-new agent
+    try:
+        return PPOAgent.load_version(val)
+    except Exception as e:
+        messagebox.showerror("Load Error",
+                             f"Failed to load checkpoint:\n{e}")
+        return PPOAgent()             # fall back to fresh
 
 
 def _launch_dashboard(state_path):
@@ -861,8 +948,9 @@ def main():
                 do_open_map(event.file)
 
         # ── update car ──
-        rays    = []
-        crashed = False
+        rays         = []
+        crashed      = False
+        signal_crash = False   # one-step-delayed crash flag for the trainer
         if car:
             if map_data:
                 left_pts  = [tuple(p) for p in map_data.get("left",  [])]
@@ -873,22 +961,14 @@ def main():
 
             for _ in range(substeps):
                 if _ai_active and _trainer:
+                    # signal_crash carries the crash detected in the PREVIOUS
+                    # substep so the trainer sees it BEFORE the car is respawned.
+                    # This is what actually increments the episode counter.
                     thr_held, brake_held, str_held = _trainer.step(
-                        rays, car.speed, car.steer, crashed, sub_dt,
+                        rays, car.speed, car.steer, signal_crash, sub_dt,
                         training_state_path=_training_state_path,
                     )
-                    # poll save request
-                    if _training_state_path:
-                        try:
-                            with open(_training_state_path) as _sf:
-                                _st = json.load(_sf)
-                            req = _st.pop("save_request", None)
-                            if req:
-                                _trainer.agent.save_npz(req)
-                                with open(_training_state_path, "w") as _sf:
-                                    json.dump(_st, _sf)
-                        except Exception:
-                            pass
+                    signal_crash = False  # consumed — reset for next iteration
 
                 car.update(thr_held, brake_held, str_held, sub_dt,
                            ai_mode=_ai_active)
@@ -897,8 +977,31 @@ def main():
                 crashed = (car.x != old_x or car.y != old_y)
 
                 if crashed and _ai_active and _trainer:
-                    car = spawn_car_on_road(map_data) or car
-                    crashed = False   # reset for next substep
+                    signal_crash = True   # will be delivered to trainer next call
+                    new_car = spawn_car_on_road(map_data)
+                    if new_car:
+                        # Give spawned car initial forward momentum so training
+                        # doesn't stall at zero speed every episode.
+                        new_car.speed = AI_MAX_SPEED * 0.25
+                        car = new_car
+                    crashed = False
+
+            # ── poll save request OUTSIDE the substep loop ──
+            # Must be here so PPOTrainer.step()'s file-write can't erase the
+            # save_request that dashboard.py injected.
+            if _ai_active and _trainer and _training_state_path:
+                try:
+                    with open(_training_state_path) as _sf:
+                        _st = json.load(_sf)
+                    req = _st.pop("save_request", None)
+                    if req:
+                        saved_path = _trainer.agent.save_npz(req)
+                        # Put a confirmation back so dashboard sees it
+                        _st["last_saved"] = req
+                        with open(_training_state_path, "w") as _sf:
+                            json.dump(_st, _sf)
+                except Exception:
+                    pass
 
             rays = compute_rays(car, left_pts, right_pts)
             _write_shared_state(car, rays)
