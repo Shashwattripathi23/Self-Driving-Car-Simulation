@@ -26,13 +26,14 @@ LAM          = 0.95
 CLIP_EPS     = 0.2
 LR_ACTOR     = 5e-4
 LR_CRITIC    = 1e-3
-ENTROPY_COEF = 0.05
+ENTROPY_COEF = 0.02   # was 0.05 — too high for 9 discrete actions, was fighting convergence
 ENTROPY_DECAY= 0.999
 ENTROPY_MIN  = 0.005
-GRAD_CLIP    = 0.5
-EPOCHS       = 4
-BATCH_SIZE   = 128
-UPDATE_EVERY = 256   # collect this many steps then update
+ACTOR_CLIP   = 1.0    # was 0.5 (shared) — actor needs more room now EPOCHS is lower
+CRITIC_CLIP  = 0.5    # critic stays tight; normalized targets keep this safe
+EPOCHS       = 5      # was 10 — fewer passes per rollout, less overfit to one batch of experience
+BATCH_SIZE   = 256
+UPDATE_EVERY = 1024   # collect this many steps then update
 
 # ── Action map ─────────────────────────────────────────────────
 COAST=0; THROTTLE=1; BRAKE=2; LEFT=3; RIGHT=4
@@ -60,12 +61,62 @@ def softmax_2d(X):
 def he(fi, fo):
     return np.random.randn(fi, fo) * math.sqrt(2.0 / fi)
 
-def clip_grads(gs, mx=GRAD_CLIP):
+def clip_grads(gs, mx):
     norm = math.sqrt(sum(float(np.sum(g**2)) for g in gs))
     if norm > mx:
         s = mx / (norm + 1e-8)
         return [g * s for g in gs]
     return gs
+
+
+class RunningNorm:
+    """
+    Tracks running mean/std of a scalar stream (Welford's algorithm) so the
+    critic can be trained on normalized targets instead of raw returns,
+    which can blow up to the hundreds/thousands under high GAMMA + long
+    episodes. norm()/denorm() convert between raw and normalized scale.
+    """
+    def __init__(self, eps=1e-4):
+        self.mean  = 0.0
+        self.var   = 1.0
+        self.count = eps   # avoid div-by-zero before any data seen
+
+    def update(self, x):
+        x = np.asarray(x, dtype=np.float64)
+        batch_mean  = x.mean()
+        batch_var   = x.var()
+        batch_count = x.size
+
+        delta = batch_mean - self.mean
+        tot   = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / tot
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        M2  = m_a + m_b + delta**2 * self.count * batch_count / tot
+
+        self.mean  = new_mean
+        self.var   = M2 / tot
+        self.count = tot
+
+    @property
+    def std(self):
+        return math.sqrt(max(self.var, 1e-8))
+
+    def norm(self, x):
+        return (x - self.mean) / self.std
+
+    def denorm(self, x):
+        return x * self.std + self.mean
+
+    def to_dict(self):
+        return {"mean": self.mean, "var": self.var, "count": self.count}
+
+    @classmethod
+    def from_dict(cls, d):
+        rn = cls()
+        rn.mean, rn.var, rn.count = d["mean"], d["var"], d["count"]
+        return rn
 
 
 # ── MLP with batched forward / backward ────────────────────────
@@ -148,6 +199,9 @@ class PPOAgent:
         self.total_steps    = 0
         self.best_reward    = -1e9
         self.reward_history = []
+        self.last_actor_loss  = 0.0   # persisted so dashboard shows real values on resume
+        self.last_critic_loss = 0.0
+        self.ret_norm = RunningNorm()  # tracks return scale so critic trains on normalized targets
 
     # ── observation ────────────────────────────────────────
 
@@ -168,7 +222,10 @@ class PPOAgent:
         probs  = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
         action   = int(np.random.choice(len(probs), p=probs))   # len() not ACT_DIM
         log_prob = float(np.log(probs[action]))
-        value    = float(self.critic.forward(obs)[0])
+        # critic is trained on normalized targets (see update()); denormalize
+        # back to raw reward scale here since GAE needs values in that scale.
+        raw_value = float(self.critic.forward(obs)[0])
+        value     = self.ret_norm.denorm(raw_value)
         return action, log_prob, value
 
     @staticmethod
@@ -187,9 +244,44 @@ class PPOAgent:
         sn       = abs(speed) / 180.0
         wall_pen = max(0.0, (0.25 - min_f) * 10.0) if min_f < 0.25 else 0.0
         turn_bon = abs(math.degrees(steer)) / 28.0 * sn
+
+        # ── Steer-toward-open-space bonus ──
+        # The terms above never check WHICH direction is open -- an agent
+        # steering straight at the nearest wall scored identically to one
+        # steering away from it. This term looks at only the front-facing
+        # rays (first half of the list; the rest are rear-facing), finds
+        # the one with the highest frac ("greenest" / most open), and
+        # rewards steering whose sign matches that ray's side. It's scaled
+        # by (a) how urgent the situation is (only matters when a wall is
+        # actually close -- on open road every direction is fine, so this
+        # shouldn't fight the unconditional turn_bon above) and (b) how
+        # far off-center the best ray is (a ray dead ahead needs no
+        # steering at all, so reward going straight in that case).
+        align_bon = 0.0
+        if rays:
+            front = rays[:len(rays)//2] if isinstance(rays[0], dict) else []
+            if front:
+                best = max(front, key=lambda r: r.get('frac', 1.0))
+                best_angle_deg = math.degrees(best.get('rel_angle', 0.0))
+                steer_deg      = math.degrees(steer)
+                urgency        = max(0.0, 1.0 - min_f)   # 0 when wide open, ->1 near a wall
+                # how far the best-ray angle is from 0deg (straight ahead),
+                # normalized so a ray near the max steer angle gives full credit
+                target_strength = min(1.0, abs(best_angle_deg) / 28.0)
+                if abs(best_angle_deg) < 5.0:
+                    # best direction is essentially straight ahead -- reward NOT steering
+                    align = 1.0 - min(1.0, abs(steer_deg) / 28.0)
+                else:
+                    # reward steering in the same direction (sign) as the best ray,
+                    # scaled by how much the agent actually steered that way
+                    same_sign = (steer_deg * best_angle_deg) > 0
+                    align = (min(1.0, abs(steer_deg) / 28.0) * target_strength
+                             if same_sign else 0.0)
+                align_bon = 1.5 * urgency * align
+
         return float(sn * 3.0
                      - max(0.0, (0.20 - sn) * 5.0)
-                     - wall_pen + turn_bon
+                     - wall_pen + turn_bon + align_bon
                      + 0.02 * dt * (1.0 + sn))
 
     # ── GAE ────────────────────────────────────────────────
@@ -220,6 +312,11 @@ class PPOAgent:
             [b[4] for b in buffer],
             [b[5] for b in buffer])
 
+        # Update running return stats ONCE per rollout (not per minibatch)
+        # so the normalization target stays stable across all epochs below.
+        self.ret_norm.update(ret)
+        ret_n = self.ret_norm.norm(ret)   # normalized returns, critic's actual target
+
         ta = tc = te = nu = 0.0
 
         for _ in range(EPOCHS):
@@ -229,7 +326,7 @@ class PPOAgent:
                 N = len(bi)
                 bo, ba, bl = obs[bi], acts[bi], lpo[bi]
                 bA = adv[bi]; bA = (bA - bA.mean()) / (bA.std() + 1e-8)
-                bR = ret[bi]
+                bR = ret_n[bi]   # normalized target — keeps critic loss/grads in a sane range
 
                 # ── Actor ──
                 logits = self.actor.forward_batch(bo)          # (N,A)
@@ -254,14 +351,14 @@ class PPOAgent:
                 d_ent -= d_ent.sum(1, keepdims=True)*probs; d_ent /= N
                 d_logits -= self.entropy_coef * d_ent
 
-                ag = clip_grads(self.actor.backward_batch(d_logits))
+                ag = clip_grads(self.actor.backward_batch(d_logits), ACTOR_CLIP)
                 self.actor_opt.step(self.actor.params(), ag)
 
                 # ── Critic ──
                 vp     = self.critic.forward_batch(bo)[:,0]   # (N,)
                 closs  = float(np.mean((vp - bR)**2))
                 d_vp   = 2.0*(vp - bR)[:,None] / N
-                cg = clip_grads(self.critic.backward_batch(d_vp))
+                cg = clip_grads(self.critic.backward_batch(d_vp), CRITIC_CLIP)
                 self.critic_opt.step(self.critic.params(), cg)
 
                 ta+=float(aloss); tc+=closs; te+=float(ent.mean()); nu+=1
@@ -283,11 +380,16 @@ class PPOAgent:
             c_W1=self.critic.W1, c_b1=self.critic.b1,
             c_W2=self.critic.W2, c_b2=self.critic.b2,
             c_W3=self.critic.W3, c_b3=self.critic.b3,
-            episode       = np.array(self.episode),
-            total_steps   = np.array(self.total_steps),
-            best_reward   = np.array(self.best_reward),
-            entropy_coef  = np.array(self.entropy_coef),
-            reward_history= np.array(self.reward_history[-100:], dtype=np.float32),
+            episode          = np.array(self.episode),
+            total_steps      = np.array(self.total_steps),
+            best_reward      = np.array(self.best_reward),
+            entropy_coef     = np.array(self.entropy_coef),
+            reward_history   = np.array(self.reward_history[-100:], dtype=np.float32),
+            last_actor_loss  = np.array(self.last_actor_loss,  dtype=np.float64),
+            last_critic_loss = np.array(self.last_critic_loss, dtype=np.float64),
+            ret_norm_mean    = np.array(self.ret_norm.mean,  dtype=np.float64),
+            ret_norm_var     = np.array(self.ret_norm.var,   dtype=np.float64),
+            ret_norm_count   = np.array(self.ret_norm.count, dtype=np.float64),
         )
         manifest = _load_manifest()
         manifest.append({"label": label or ts, "timestamp": ts,
@@ -316,6 +418,14 @@ class PPOAgent:
         ag.best_reward    = float(d['best_reward'])
         ag.entropy_coef   = float(d['entropy_coef'])
         ag.reward_history = d['reward_history'].tolist()
+        # Restore last known losses so dashboard shows real values immediately
+        ag.last_actor_loss  = float(d['last_actor_loss'])  if 'last_actor_loss'  in d else 0.0
+        ag.last_critic_loss = float(d['last_critic_loss']) if 'last_critic_loss' in d else 0.0
+        # Restore return-normalization stats (old checkpoints fall back to fresh stats)
+        if 'ret_norm_mean' in d:
+            ag.ret_norm.mean  = float(d['ret_norm_mean'])
+            ag.ret_norm.var   = float(d['ret_norm_var'])
+            ag.ret_norm.count = float(d['ret_norm_count'])
         ag.actor_opt  = Adam(ag.actor.params(),  lr=LR_ACTOR)
         ag.critic_opt = Adam(ag.critic.params(), lr=LR_CRITIC)
         return ag
@@ -335,6 +445,8 @@ class PPOAgent:
         ag.total_steps    = data.get('total_steps', 0)
         ag.entropy_coef   = data.get('entropy_coef', ENTROPY_COEF)
         ag.reward_history = data.get('reward_history', [])
+        if 'ret_norm' in data:
+            ag.ret_norm = RunningNorm.from_dict(data['ret_norm'])
         ag.actor_opt  = Adam(ag.actor.params(),  lr=LR_ACTOR)
         ag.critic_opt = Adam(ag.critic.params(), lr=LR_CRITIC)
         return ag
@@ -383,8 +495,8 @@ class PPOTrainer:
             "ep_reward":      0.0,
             "best_reward":    agent.best_reward,
             "total_steps":    agent.total_steps,
-            "actor_loss":     0.0,
-            "critic_loss":    0.0,
+            "actor_loss":     agent.last_actor_loss,   # restored from checkpoint
+            "critic_loss":    agent.last_critic_loss,  # restored from checkpoint
             "entropy_coef":   agent.entropy_coef,
             "reward_history": agent.reward_history[-50:],
             "running":        True,
@@ -415,6 +527,9 @@ class PPOTrainer:
                 self.buffer.clear()
                 self.stats["actor_loss"]  = round(al, 6)
                 self.stats["critic_loss"] = round(cl, 6)
+                # Keep agent fields in sync so next save captures latest losses
+                self.agent.last_actor_loss  = al
+                self.agent.last_critic_loss = cl
 
             self.stats.update({
                 "episode":        self.agent.episode,
@@ -431,8 +546,16 @@ class PPOTrainer:
         # write stats for dashboard
         if training_state_path:
             try:
+                # Merge over existing file so save_request injected by the
+                # dashboard is not wiped out before map_reader.py can read it.
+                try:
+                    with open(training_state_path) as _f:
+                        existing = json.load(_f)
+                except Exception:
+                    existing = {}
+                existing.update(self.stats)
                 with open(training_state_path, "w") as f:
-                    json.dump(self.stats, f)
+                    json.dump(existing, f)
             except OSError:
                 pass
 

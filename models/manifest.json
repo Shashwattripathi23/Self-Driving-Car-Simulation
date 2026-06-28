@@ -5,5 +5,47 @@
     "episode": 0,
     "best_reward": -1000000000.0,
     "file": "ppo_smoke_test.npz"
+  },
+  {
+    "label": "first_proper",
+    "timestamp": "20260628_170547",
+    "episode": 49,
+    "best_reward": 580.185,
+    "file": "ppo_first_proper.npz"
+  },
+  {
+    "label": "second_proper",
+    "timestamp": "20260628_171039",
+    "episode": 112,
+    "best_reward": 580.185,
+    "file": "ppo_second_proper.npz"
+  },
+  {
+    "label": "steering_but_circular",
+    "timestamp": "20260628_172330",
+    "episode": 160,
+    "best_reward": 1225.4,
+    "file": "ppo_steering_but_circular.npz"
+  },
+  {
+    "label": "steering_same_way",
+    "timestamp": "20260628_172742",
+    "episode": 276,
+    "best_reward": 1225.4,
+    "file": "ppo_steering_same_way.npz"
+  },
+  {
+    "label": "new_reward_not_steering",
+    "timestamp": "20260628_182817",
+    "episode": 79,
+    "best_reward": 1157.964,
+    "file": "ppo_new_reward_not_steering.npz"
+  },
+  {
+    "label": "new_reward_steering",
+    "timestamp": "20260628_182853",
+    "episode": 88,
+    "best_reward": 1157.964,
+    "file": "ppo_new_reward_steering.npz"
   }
 ]
