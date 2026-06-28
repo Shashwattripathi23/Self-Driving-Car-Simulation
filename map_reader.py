@@ -498,6 +498,14 @@ _trainer           = None      # PPOTrainer instance
 _ai_active         = False     # True while AI is driving
 _dashboard_proc    = None      # dashboard.py subprocess
 _training_state_path = None    # shared JSON for dashboard
+_ai_spawn          = None      # fixed (x, y, heading) used for AI episode resets
+
+# ── Stall detection (ends episode if car barely moves for N seconds) ──
+STALL_TIMEOUT  = 5.0    # seconds of (near-)no net movement before ending the episode
+STALL_DIST_EPS = 4.0    # px — net movement below this doesn't reset the stall timer
+_stall_x       = None
+_stall_y       = None
+_stall_timer   = 0.0
 
 
 def _ask_model_version():
@@ -821,7 +829,8 @@ def draw_car_telemetry_overlay(surf, font, small_font, car):
 # ── Main ───────────────────────────────────────────────────────
 
 def main():
-    global _trainer, _ai_active, _training_state_path
+    global _trainer, _ai_active, _training_state_path, _ai_spawn
+    global _stall_x, _stall_y, _stall_timer
 
     pygame.init()
     screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -852,10 +861,12 @@ def main():
 
     def do_spawn_car():
         nonlocal car, status, status_timer
-        global _trainer, _ai_active
+        global _trainer, _ai_active, _ai_spawn
         if map_data:
             car = spawn_car_on_road(map_data)
             if car:
+                # Lock in this position as the fixed AI respawn point for this map
+                _ai_spawn = (car.x, car.y, car.heading)
                 status = "Spawned car on road!"
                 _launch_car_gui()
                 _trainer    = None
@@ -931,7 +942,7 @@ def main():
                             # ask model version now (only when starting AI)
                             agent = _ask_model_version()
                             if agent is not None:
-                                global _training_state_path
+                                global _training_state_path, _ai_spawn
                                 fd, _training_state_path = tempfile.mkstemp(
                                     suffix=".json", prefix="train_state_")
                                 os.close(fd)
@@ -942,6 +953,9 @@ def main():
                                 _trainer = PPOTrainer(agent)
                                 _trainer.stats["running"] = True
                                 _ai_active = True
+                                # Lock the current car position as the fixed respawn point
+                                _ai_spawn = (car.x, car.y, car.heading)
+                                _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
                                 _launch_dashboard(_training_state_path)
 
             elif event.type == pygame.DROPFILE:
@@ -976,14 +990,40 @@ def main():
                 enforce_road_boundary(car, left_pts, right_pts, margin=6)
                 crashed = (car.x != old_x or car.y != old_y)
 
+                # ── Stall detection ──
+                # If the car hasn't made meaningful net progress from its
+                # last-checked position in STALL_TIMEOUT seconds, treat it
+                # like a crash so the episode ends (gets the same -15 via
+                # compute_reward's crashed flag) instead of idling forever
+                # and wasting buffer steps on a policy that's just stuck.
+                if _ai_active:
+                    if _stall_x is None:
+                        _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+                    else:
+                        moved = math.hypot(car.x - _stall_x, car.y - _stall_y)
+                        if moved >= STALL_DIST_EPS:
+                            _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+                        else:
+                            _stall_timer += sub_dt
+                            if _stall_timer >= STALL_TIMEOUT:
+                                crashed = True
+                                _stall_timer = 0.0   # reset; new position set below on respawn
+
                 if crashed and _ai_active and _trainer:
                     signal_crash = True   # will be delivered to trainer next call
-                    new_car = spawn_car_on_road(map_data)
+                    # Always respawn at the fixed point chosen when AI training
+                    # began — consistent start state makes learning much easier.
+                    if _ai_spawn is not None:
+                        sx, sy, sh = _ai_spawn
+                        new_car = MapCar(sx, sy, sh)
+                    else:
+                        new_car = spawn_car_on_road(map_data)
                     if new_car:
                         # Give spawned car initial forward momentum so training
                         # doesn't stall at zero speed every episode.
                         new_car.speed = AI_MAX_SPEED * 0.25
                         car = new_car
+                        _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
                     crashed = False
 
             # ── poll save request OUTSIDE the substep loop ──

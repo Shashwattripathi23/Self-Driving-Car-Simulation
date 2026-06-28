@@ -47,5 +47,33 @@
     "episode": 88,
     "best_reward": 1157.964,
     "file": "ppo_new_reward_steering.npz"
+  },
+  {
+    "label": "stteer2",
+    "timestamp": "20260628_232520",
+    "episode": 123,
+    "best_reward": 1157.964,
+    "file": "ppo_stteer2.npz"
+  },
+  {
+    "label": "check1NewMap",
+    "timestamp": "20260629_001309",
+    "episode": 45,
+    "best_reward": 452.429,
+    "file": "ppo_check1NewMap.npz"
+  },
+  {
+    "label": "new_chech_on_mao",
+    "timestamp": "20260629_004659",
+    "episode": 262,
+    "best_reward": 1157.964,
+    "file": "ppo_new_chech_on_mao.npz"
+  },
+  {
+    "label": "best_version_modelV2",
+    "timestamp": "20260629_012244",
+    "episode": 97,
+    "best_reward": 822.726,
+    "file": "ppo_best_version_modelV2.npz"
   }
 ]

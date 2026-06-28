@@ -243,45 +243,60 @@ class PPOAgent:
         min_f    = min(fracs) if fracs else 1.0
         sn       = abs(speed) / 180.0
         wall_pen = max(0.0, (0.25 - min_f) * 10.0) if min_f < 0.25 else 0.0
-        turn_bon = abs(math.degrees(steer)) / 28.0 * sn
 
-        # ── Steer-toward-open-space bonus ──
-        # The terms above never check WHICH direction is open -- an agent
-        # steering straight at the nearest wall scored identically to one
-        # steering away from it. This term looks at only the front-facing
-        # rays (first half of the list; the rest are rear-facing), finds
-        # the one with the highest frac ("greenest" / most open), and
-        # rewards steering whose sign matches that ray's side. It's scaled
-        # by (a) how urgent the situation is (only matters when a wall is
-        # actually close -- on open road every direction is fine, so this
-        # shouldn't fight the unconditional turn_bon above) and (b) how
-        # far off-center the best ray is (a ray dead ahead needs no
-        # steering at all, so reward going straight in that case).
-        align_bon = 0.0
+        # ── Steering bonus: match the best front ray, whatever it is ──
+        # Previously this was two separate, conflicting terms:
+        #   - turn_bon: rewarded steering magnitude UNCONDITIONALLY, even on
+        #     open straight road. That meant once the agent learned to turn
+        #     into corners, it had no incentive to ever straighten back out
+        #     -- holding the wheel turned was free reward as long as it was
+        #     still moving fast.
+        #   - align_bon: rewarded matching steering to the most-open front
+        #     ray, but only scaled by "urgency" (closeness to a wall). On a
+        #     straight stretch right after a corner, urgency is near zero,
+        #     so the "go straight" signal was too weak to counteract turn_bon.
+        # Folded into one term: always reward matching the steering angle to
+        # the best front ray's direction, whether that's a turn or straight
+        # ahead. No urgency gating -- being centered is correct on a straight
+        # exactly as much as turning is correct in a corner, so both should
+        # be rewarded with the same weight, not have one dominate by default.
+        steer_bon = 0.0
         if rays:
             front = rays[:len(rays)//2] if isinstance(rays[0], dict) else []
             if front:
-                best = max(front, key=lambda r: r.get('frac', 1.0))
-                best_angle_deg = math.degrees(best.get('rel_angle', 0.0))
-                steer_deg      = math.degrees(steer)
-                urgency        = max(0.0, 1.0 - min_f)   # 0 when wide open, ->1 near a wall
-                # how far the best-ray angle is from 0deg (straight ahead),
-                # normalized so a ray near the max steer angle gives full credit
-                target_strength = min(1.0, abs(best_angle_deg) / 28.0)
-                if abs(best_angle_deg) < 5.0:
-                    # best direction is essentially straight ahead -- reward NOT steering
-                    align = 1.0 - min(1.0, abs(steer_deg) / 28.0)
+                # Weighted average direction (weighted by frac), not argmax.
+                # argmax picks a single ray, so on a uniformly-open straight
+                # (all fracs ~equal) it arbitrarily locks onto whichever ray
+                # happens to be first/highest by a hair -- e.g. the leftmost
+                # ray -- and wrongly tells the agent "turn hard left" when
+                # really every direction is equally fine. Averaging washes
+                # out ties/noise and naturally centers on straights, while
+                # still pointing toward the open side when one genuinely
+                # exists (a real wall-avoid or curve case has an asymmetric
+                # frac distribution, so the weighted average shifts toward it).
+                total_w = sum(r.get('frac', 1.0) for r in front)
+                if total_w > 1e-6:
+                    best_angle_deg = sum(r.get('frac', 1.0) * math.degrees(r.get('rel_angle', 0.0))
+                                          for r in front) / total_w
                 else:
-                    # reward steering in the same direction (sign) as the best ray,
-                    # scaled by how much the agent actually steered that way
+                    best_angle_deg = 0.0
+                steer_deg = math.degrees(steer)
+                if abs(best_angle_deg) < 5.0:
+                    # best direction is straight ahead -- reward NOT steering
+                    match = 1.0 - min(1.0, abs(steer_deg) / 28.0)
+                else:
+                    # reward steering toward the same side as the best ray,
+                    # scaled by both how hard it steered and how far off
+                    #-center the target direction actually is
+                    target_strength = min(1.0, abs(best_angle_deg) / 28.0)
                     same_sign = (steer_deg * best_angle_deg) > 0
-                    align = (min(1.0, abs(steer_deg) / 28.0) * target_strength
+                    match = (min(1.0, abs(steer_deg) / 28.0) * target_strength
                              if same_sign else 0.0)
-                align_bon = 1.5 * urgency * align
+                steer_bon = 1.2 * sn * match
 
         return float(sn * 3.0
                      - max(0.0, (0.20 - sn) * 5.0)
-                     - wall_pen + turn_bon + align_bon
+                     - wall_pen + steer_bon
                      + 0.02 * dt * (1.0 + sn))
 
     # ── GAE ────────────────────────────────────────────────
