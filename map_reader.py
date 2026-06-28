@@ -498,6 +498,10 @@ _trainer           = None      # PPOTrainer instance
 _ai_active         = False     # True while AI is driving
 _dashboard_proc    = None      # dashboard.py subprocess
 _training_state_path = None    # shared JSON for dashboard
+
+# ── Periodic checkpoint saving ──────────────────────────────
+SAVE_EVERY_EPISODES = 150   # rotate spawn point & auto-save checkpoint this often
+_last_save_episode   = 0
 _ai_spawn          = None      # fixed (x, y, heading) used for AI episode resets
 
 # ── Stall detection (ends episode if car barely moves for N seconds) ──
@@ -829,8 +833,8 @@ def draw_car_telemetry_overlay(surf, font, small_font, car):
 # ── Main ───────────────────────────────────────────────────────
 
 def main():
-    global _trainer, _ai_active, _training_state_path, _ai_spawn
-    global _stall_x, _stall_y, _stall_timer
+    global _trainer, _ai_active, _training_state_path, _last_save_episode, \
+           _ai_spawn, _stall_x, _stall_y, _stall_timer
 
     pygame.init()
     screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -861,7 +865,7 @@ def main():
 
     def do_spawn_car():
         nonlocal car, status, status_timer
-        global _trainer, _ai_active, _ai_spawn
+        global _trainer, _ai_active ,_ai_spawn
         if map_data:
             car = spawn_car_on_road(map_data)
             if car:
@@ -984,6 +988,22 @@ def main():
                     )
                     signal_crash = False  # consumed — reset for next iteration
 
+                    # ── Periodic checkpoint save + random respawn point ──
+                    ep = _trainer.agent.episode
+                    if ep > 0 and ep % SAVE_EVERY_EPISODES == 0 and ep != _last_save_episode:
+                        _last_save_episode = ep
+                        _trainer.agent.save_npz()
+                        # Pick a new random spawn and lock it as the fixed point.
+                        # Without updating _ai_spawn here, every crash would
+                        # still go back to the ORIGINAL spawn, defeating the
+                        # purpose of rotation.
+                        rotated = spawn_car_on_road(map_data)
+                        if rotated:
+                            _ai_spawn = (rotated.x, rotated.y, rotated.heading)
+                            rotated.speed = AI_MAX_SPEED * 0.25
+                            car = rotated
+                            _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+
                 car.update(thr_held, brake_held, str_held, sub_dt,
                            ai_mode=_ai_active)
                 old_x, old_y = car.x, car.y
@@ -1010,21 +1030,18 @@ def main():
                                 _stall_timer = 0.0   # reset; new position set below on respawn
 
                 if crashed and _ai_active and _trainer:
-                    signal_crash = True   # will be delivered to trainer next call
-                    # Always respawn at the fixed point chosen when AI training
-                    # began — consistent start state makes learning much easier.
+                    signal_crash = True
                     if _ai_spawn is not None:
                         sx, sy, sh = _ai_spawn
                         new_car = MapCar(sx, sy, sh)
                     else:
                         new_car = spawn_car_on_road(map_data)
                     if new_car:
-                        # Give spawned car initial forward momentum so training
-                        # doesn't stall at zero speed every episode.
                         new_car.speed = AI_MAX_SPEED * 0.25
                         car = new_car
                         _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
                     crashed = False
+
 
             # ── poll save request OUTSIDE the substep loop ──
             # Must be here so PPOTrainer.step()'s file-write can't erase the

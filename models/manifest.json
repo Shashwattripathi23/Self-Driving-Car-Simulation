@@ -103,5 +103,40 @@
     "episode": 455,
     "best_reward": 951.836,
     "file": "ppo_modelv6.npz"
+  },
+  {
+    "label": "a_little_worse",
+    "timestamp": "20260629_022153",
+    "episode": 627,
+    "best_reward": 951.836,
+    "file": "ppo_a_little_worse.npz"
+  },
+  {
+    "label": "eehv",
+    "timestamp": "20260629_023439",
+    "episode": 669,
+    "best_reward": 1042.898,
+    "file": "ppo_eehv.npz"
+  },
+  {
+    "label": "20260629_024948",
+    "timestamp": "20260629_024948",
+    "episode": 800,
+    "best_reward": 1042.898,
+    "file": "ppo_20260629_024948.npz"
+  },
+  {
+    "label": "20260629_030024",
+    "timestamp": "20260629_030024",
+    "episode": 1200,
+    "best_reward": 1042.898,
+    "file": "ppo_20260629_030024.npz"
+  },
+  {
+    "label": "aws",
+    "timestamp": "20260629_030036",
+    "episode": 1207,
+    "best_reward": 1042.898,
+    "file": "ppo_aws.npz"
   }
 ]

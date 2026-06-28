@@ -26,9 +26,10 @@ LAM          = 0.95
 CLIP_EPS     = 0.2
 LR_ACTOR     = 5e-4
 LR_CRITIC    = 1e-3
-ENTROPY_COEF = 0.02
-ENTROPY_DECAY= 0.999
-ENTROPY_MIN  = 0.005
+ENTROPY_COEF = 0.05   # higher than before — keeps policy exploratory for longer
+ENTROPY_DECAY= 0.9995  # slower decay so entropy doesn't bottom out too quickly
+ENTROPY_MIN  = 0.01   # floor: policy never becomes fully deterministic
+EXPLORE_EPS  = 0.08   # ε-greedy on top of stochastic policy (8% fully-random actions)
 ACTOR_CLIP   = 1.0
 CRITIC_CLIP  = 0.5
 EPOCHS       = 5
@@ -217,11 +218,22 @@ class PPOAgent:
     # ── action selection ────────────────────────────────────────
 
     def select_action(self, obs):
-        logits = self.actor.forward(obs)
-        probs  = softmax_2d(logits[None])[0]
-        probs  = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
-        action   = int(np.random.choice(len(probs), p=probs))
-        log_prob = float(np.log(probs[action]))
+        # ε-greedy: occasionally take a fully-random action so the policy
+        # keeps seeing new states even after it has mostly converged.
+        if np.random.random() < EXPLORE_EPS:
+            action   = np.random.randint(ACT_DIM)
+            # Still need a log_prob for the PPO buffer.  Use the policy’s
+            # actual prob for this action so the importance ratio is correct.
+            logits   = self.actor.forward(obs)
+            probs    = softmax_2d(logits[None])[0]
+            probs    = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
+            log_prob = float(np.log(probs[action]))
+        else:
+            logits   = self.actor.forward(obs)
+            probs    = softmax_2d(logits[None])[0]
+            probs    = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
+            action   = int(np.random.choice(len(probs), p=probs))
+            log_prob = float(np.log(probs[action]))
         raw_value = float(self.critic.forward(obs)[0])
         value     = self.ret_norm.denorm(raw_value)
         return action, log_prob, value
