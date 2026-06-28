@@ -229,5 +229,103 @@
     "episode": 150,
     "best_reward": 92.592,
     "file": "ppo_20260629_042213.npz"
+  },
+  {
+    "label": "20260629_042607",
+    "timestamp": "20260629_042607",
+    "episode": 300,
+    "best_reward": 221.018,
+    "file": "ppo_20260629_042607.npz"
+  },
+  {
+    "label": "20260629_043203",
+    "timestamp": "20260629_043203",
+    "episode": 450,
+    "best_reward": 304.543,
+    "file": "ppo_20260629_043203.npz"
+  },
+  {
+    "label": "20260629_043702",
+    "timestamp": "20260629_043702",
+    "episode": 600,
+    "best_reward": 319.535,
+    "file": "ppo_20260629_043702.npz"
+  },
+  {
+    "label": "20260629_044401",
+    "timestamp": "20260629_044401",
+    "episode": 750,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_044401.npz"
+  },
+  {
+    "label": "20260629_044853",
+    "timestamp": "20260629_044853",
+    "episode": 900,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_044853.npz"
+  },
+  {
+    "label": "20260629_045304",
+    "timestamp": "20260629_045304",
+    "episode": 1050,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_045304.npz"
+  },
+  {
+    "label": "20260629_045742",
+    "timestamp": "20260629_045742",
+    "episode": 1200,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_045742.npz"
+  },
+  {
+    "label": "20260629_050025",
+    "timestamp": "20260629_050025",
+    "episode": 1350,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_050025.npz"
+  },
+  {
+    "label": "20260629_051304",
+    "timestamp": "20260629_051304",
+    "episode": 1350,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_051304.npz"
+  },
+  {
+    "label": "20260629_051544",
+    "timestamp": "20260629_051544",
+    "episode": 1350,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_051544.npz"
+  },
+  {
+    "label": "headless_exit",
+    "timestamp": "20260629_052013",
+    "episode": 1409,
+    "best_reward": 461.487,
+    "file": "ppo_headless_exit.npz"
+  },
+  {
+    "label": "20260629_052159",
+    "timestamp": "20260629_052159",
+    "episode": 1350,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_052159.npz"
+  },
+  {
+    "label": "headless_exit",
+    "timestamp": "20260629_052722",
+    "episode": 1411,
+    "best_reward": 626.716,
+    "file": "ppo_headless_exit.npz"
+  },
+  {
+    "label": "20260629_052730",
+    "timestamp": "20260629_052730",
+    "episode": 1350,
+    "best_reward": 461.487,
+    "file": "ppo_20260629_052730.npz"
   }
 ]

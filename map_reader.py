@@ -4,8 +4,16 @@ map_reader.py  –  Autonomous Car Simulator  |  Map Viewer
 Opens a .json map file produced by environment.py and
 renders the road exactly as it was drawn.
 
-Controls
-────────
+Normal usage
+────────────
+  python map_reader.py [map.json]
+
+Headless training (no window, full CPU speed)
+────────────────────────────────────────────
+  python map_reader.py --headless map.json
+
+Controls  (visual mode only)
+─────────────────────────────
   O / Ctrl+O   open another map file
   R            reset / clear current map  (or reset car if active)
   ESC          quit
@@ -26,6 +34,28 @@ import subprocess
 import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox
+
+# ── Headless flag ──────────────────────────────────────────────
+# --headless   : skip all rendering, run at full CPU speed
+HEADLESS = "--headless" in sys.argv
+# --checkpoint <file>  : resume from a saved .npz checkpoint (headless only)
+_CHECKPOINT_ARG = None
+if HEADLESS:
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    # Parse --checkpoint <value> and remove both from argv
+    _clean = []
+    _i = 0
+    while _i < len(sys.argv):
+        if sys.argv[_i] == "--checkpoint" and _i + 1 < len(sys.argv):
+            _CHECKPOINT_ARG = sys.argv[_i + 1]
+            _i += 2
+        elif sys.argv[_i] == "--headless":
+            _i += 1
+        else:
+            _clean.append(sys.argv[_i])
+            _i += 1
+    sys.argv = _clean
 
 # ── PPO model (optional – graceful fallback if numpy missing) ──
 try:
@@ -836,10 +866,11 @@ def main():
     global _trainer, _ai_active, _training_state_path, _last_save_episode, \
            _ai_spawn, _stall_x, _stall_y, _stall_timer
 
-    pygame.init()
+    pygame.init()   # SDL dummy driver (set above) handles headless display
     screen = pygame.display.set_mode((WIN_W, WIN_H))
-    pygame.display.set_caption("Autonomous Car Simulator – Map Viewer")
-    clock  = pygame.time.Clock()
+    if not HEADLESS:
+        pygame.display.set_caption("Autonomous Car Simulator – Map Viewer")
+    clock = pygame.time.Clock()
 
     font       = pygame.font.SysFont("consolas", 13, bold=True)
     small_font = pygame.font.SysFont("consolas", 12)
@@ -853,12 +884,14 @@ def main():
     car          = None   # MapCar instance or None
 
     def do_open_map(path):
-        nonlocal map_data, filename, status, status_timer, car
+        nonlocal map_data, filename, status, status_timer, car, left_pts, right_pts
         map_data, err = load_map(path)
         if map_data:
-            filename = os.path.basename(path)
-            status   = f"Loaded: {filename}"
-            car      = None   # remove old car when new map loaded
+            filename  = os.path.basename(path)
+            status    = f"Loaded: {filename}"
+            car       = None
+            left_pts  = []   # force rebuild from new map geometry
+            right_pts = []
         else:
             status = err or "Failed to load"
         status_timer = 240
@@ -882,95 +915,189 @@ def main():
     # ── CLI argument / immediate prompt ──
     if len(sys.argv) > 1:
         do_open_map(sys.argv[1])
-    else:
+    elif not HEADLESS:
         path = open_file_dialog()
         if path:
             do_open_map(path)
+    else:
+        print("[headless] No map path provided.  Usage: python map_reader.py --headless map.json")
+        return
+
+    # ── Headless: auto-spawn car + start AI ──
+    if HEADLESS:
+        if map_data is None:
+            print("[headless] Failed to load map.")
+            return
+        do_spawn_car()   # random spawn on road
+        if car is None:
+            print("[headless] No center-line data in map — cannot spawn car.")
+            return
+
+        # ── Load or create agent ──
+        if _CHECKPOINT_ARG is not None:
+            # Resolve path: try as-is, then inside models/
+            ck_path = _CHECKPOINT_ARG
+            if not os.path.isabs(ck_path) and not os.path.exists(ck_path):
+                ck_path = os.path.join(MODELS_DIR, _CHECKPOINT_ARG)
+            if not os.path.exists(ck_path):
+                print(f"[headless] Checkpoint not found: {ck_path}")
+                return
+            agent = PPOAgent.load_npz(ck_path)
+            print(f"[headless] Resumed from checkpoint: {os.path.basename(ck_path)}")
+            print(f"           Episode={agent.episode}  Best reward={agent.best_reward:.2f}")
+        elif HAS_MODEL:
+            # No --checkpoint given — show what's available and exit
+            manifest = []
+            try:
+                import json as _js
+                with open(os.path.join(MODELS_DIR, "manifest.json")) as _mf:
+                    manifest = _js.load(_mf)
+            except Exception:
+                pass
+            if manifest:
+                print("[headless] No --checkpoint given.  Available checkpoints:")
+                for i, m in enumerate(sorted(manifest,
+                                             key=lambda x: x["timestamp"],
+                                             reverse=True)):
+                    print(f"  [{i+1:>2}] ep={m['episode']:<6} "
+                          f"best={m['best_reward']:<8.2f} "
+                          f"{m['timestamp']}  {m['file']}")
+                print("Usage: python map_reader.py --headless map.json "
+                      "--checkpoint <filename>")
+            else:
+                print("[headless] No checkpoints found.  Starting fresh "
+                      "(omit --checkpoint to start fresh).")
+                agent = PPOAgent()
+                print("[headless] Starting fresh agent.")
+            if manifest:
+                return   # exit so user can pick a checkpoint
+        else:
+            print("[headless] model.py not available — cannot train.")
+            return
+
+        import tempfile as _tmp
+        fd, _training_state_path = _tmp.mkstemp(suffix=".json", prefix="train_state_")
+        os.close(fd)
+        with open(_training_state_path, "w") as _tf:
+            json.dump({"running": True, "episode": 0, "ep_reward": 0.0,
+                       "best_reward": 0.0, "total_steps": 0, "reward_history": []}, _tf)
+        _trainer = PPOTrainer(agent)
+        _trainer.stats["running"] = True
+        _ai_active = True
+        _ai_spawn  = (car.x, car.y, car.heading)
+        _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+        # Only set max_speed for fresh agents — loaded checkpoints must keep
+        # whatever max_speed they were trained with.  Changing it after loading
+        # shifts the observation AND reward scale, causing the agent to regress.
+        if _CHECKPOINT_ARG is None:
+            _trainer.agent.max_speed = AI_MAX_SPEED
+        print(f"[headless] max_speed={_trainer.agent.max_speed:.0f}  "
+              f"({'loaded from checkpoint' if _CHECKPOINT_ARG else 'fresh agent'})")
+        # No dashboard in headless — it adds subprocess + JSON I/O overhead.
+        # Progress is printed to the terminal every 10 episodes instead.
+        print(f"[headless] Training started.  Map: {filename}  "
+              f"Spawn: ({car.x:.0f}, {car.y:.0f})")
+        print("[headless] Press Ctrl+C to stop and save.")
 
     left_pts  = []
     right_pts = []
+    _last_print_ep = 0   # for headless terminal progress
 
     while True:
-        dt = min(clock.tick(FPS) / 1000.0, 0.05)
-
-        # read held keys for smooth car control
-        keys = pygame.key.get_pressed()
-        if car:
-            thr_held   = (1.0 if keys[pygame.K_w] else
-                         -1.0 if keys[pygame.K_s] else 0.0)
-            str_held   = (-1.0 if keys[pygame.K_a] else
-                           1.0 if keys[pygame.K_d] else 0.0)
-            brake_held = bool(keys[pygame.K_SPACE])
+        # In headless mode skip the FPS cap — run at full CPU speed.
+        # Use a fixed dt so physics stays deterministic regardless of
+        # how fast the loop actually runs.
+        if HEADLESS:
+            dt = 1.0 / FPS
         else:
-            thr_held = str_held = 0.0
-            brake_held = False
+            dt = min(clock.tick(FPS) / 1000.0, 0.05)
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                _kill_car_gui()
-                pygame.quit(); sys.exit()
+        # read held keys for smooth car control (visual mode only)
+        if not HEADLESS:
+            keys = pygame.key.get_pressed()
+            if car and not _ai_active:
+                thr_held   = (1.0 if keys[pygame.K_w] else
+                             -1.0 if keys[pygame.K_s] else 0.0)
+                str_held   = (-1.0 if keys[pygame.K_a] else
+                               1.0 if keys[pygame.K_d] else 0.0)
+                brake_held = bool(keys[pygame.K_SPACE])
+            else:
+                thr_held = str_held = 0.0
+                brake_held = False
 
-            elif event.type == pygame.KEYDOWN:
-                ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
-
-                if event.key == pygame.K_ESCAPE:
+        # In headless mode skip event polling — SDL dummy produces no events
+        # and pygame.event.get() still has overhead when called at full speed.
+        if not HEADLESS:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
                     _kill_car_gui()
                     pygame.quit(); sys.exit()
 
-                elif event.key == pygame.K_r:
-                    if car:
-                        do_spawn_car()   # respawn car
-                    else:
-                        map_data = None; filename = ""; status = ""; car = None
+                elif event.type == pygame.KEYDOWN:
+                    ctrl = pygame.key.get_mods() & pygame.KMOD_CTRL
 
-                elif event.key == pygame.K_o or (ctrl and event.key == pygame.K_o):
-                    path = open_file_dialog()
-                    if path:
-                        do_open_map(path)
+                    if event.key == pygame.K_ESCAPE:
+                        _kill_car_gui()
+                        pygame.quit(); sys.exit()
 
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    if OPEN_BTN.collidepoint(event.pos):
+                    elif event.key == pygame.K_r:
+                        if car:
+                            do_spawn_car()   # respawn car
+                        else:
+                            map_data = None; filename = ""; status = ""; car = None
+
+                    elif event.key == pygame.K_o or (ctrl and event.key == pygame.K_o):
                         path = open_file_dialog()
                         if path:
                             do_open_map(path)
-                    elif CAR_BTN.collidepoint(event.pos) and map_data:
-                        do_spawn_car()
-                    elif AI_BTN.collidepoint(event.pos) and car and HAS_MODEL:
-                        if _ai_active:
-                            # stop training
-                            _ai_active = False
-                            if _trainer:
-                                _trainer.stats["running"] = False
-                        else:
-                            # ask model version now (only when starting AI)
-                            agent = _ask_model_version()
-                            if agent is not None:
-                                global _training_state_path, _ai_spawn
-                                fd, _training_state_path = tempfile.mkstemp(
-                                    suffix=".json", prefix="train_state_")
-                                os.close(fd)
-                                with open(_training_state_path, "w") as _tf:
-                                    json.dump({"running": False, "episode": 0,
-                                               "ep_reward": 0.0, "best_reward": 0.0,
-                                               "total_steps": 0, "reward_history": []}, _tf)
-                                _trainer = PPOTrainer(agent)
-                                _trainer.stats["running"] = True
-                                _ai_active = True
-                                # Lock the current car position as the fixed respawn point
-                                _ai_spawn = (car.x, car.y, car.heading)
-                                _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
-                                _launch_dashboard(_training_state_path)
 
-            elif event.type == pygame.DROPFILE:
-                do_open_map(event.file)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1:
+                        if OPEN_BTN.collidepoint(event.pos):
+                            path = open_file_dialog()
+                            if path:
+                                do_open_map(path)
+                        elif CAR_BTN.collidepoint(event.pos) and map_data:
+                            do_spawn_car()
+                        elif AI_BTN.collidepoint(event.pos) and car and HAS_MODEL:
+                            if _ai_active:
+                                # stop training
+                                _ai_active = False
+                                if _trainer:
+                                    _trainer.stats["running"] = False
+                            else:
+                                # ask model version now (only when starting AI)
+                                agent = _ask_model_version()
+                                if agent is not None:
+                                    fd, _training_state_path = tempfile.mkstemp(
+                                        suffix=".json", prefix="train_state_")
+                                    os.close(fd)
+                                    with open(_training_state_path, "w") as _tf:
+                                        json.dump({"running": False, "episode": 0,
+                                                   "ep_reward": 0.0, "best_reward": 0.0,
+                                                   "total_steps": 0, "reward_history": []}, _tf)
+                                    _trainer = PPOTrainer(agent)
+                                    _trainer.stats["running"] = True
+                                    _ai_active = True
+                                    # Lock the current car position as the fixed respawn point
+                                    _ai_spawn = (car.x, car.y, car.heading)
+                                    _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+                                    # Use AI_MAX_SPEED so obs + reward are on the same scale
+                                    _trainer.agent.max_speed = AI_MAX_SPEED
+                                    _launch_dashboard(_training_state_path)
+
+                elif event.type == pygame.DROPFILE:
+                    do_open_map(event.file)
+
 
         # ── update car ──
         rays         = []
         crashed      = False
-        signal_crash = False   # one-step-delayed crash flag for the trainer
+        signal_crash = False
         if car:
-            if map_data:
+            # Road geometry doesn't change — only rebuild when map changes.
+            # Rebuilding every frame creates thousands of list objects per second.
+            if map_data and not left_pts:
                 left_pts  = [tuple(p) for p in map_data.get("left",  [])]
                 right_pts = [tuple(p) for p in map_data.get("right", [])]
 
@@ -987,9 +1114,12 @@ def main():
                 if _ai_active and _trainer:
                     thr_held, brake_held, str_held = _trainer.step(
                         rays, car.speed, car.steer, signal_crash, sub_dt,
-                        training_state_path=_training_state_path,
+                        # In headless mode pass None so the trainer skips
+                        # JSON file I/O on every substep (was thousands/sec).
+                        training_state_path=(None if HEADLESS
+                                             else _training_state_path),
                     )
-                    signal_crash = False  # consumed — reset for next iteration
+                    signal_crash = False
 
                     # ── Periodic checkpoint save + random respawn point ──
                     ep = _trainer.agent.episode
@@ -1006,6 +1136,26 @@ def main():
                             rotated.speed = AI_MAX_SPEED * 0.25
                             car = rotated
                             _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+
+                # ── Safety override: counter-steer when wall is critically close ──
+                # The policy sometimes commits to a turn and keeps steering even
+                # as the inside wall closes in.  If the closest front ray on the
+                # side we're steering toward drops below the critical threshold,
+                # flip str_held to opposite so the car steers away from the wall.
+                # This is purely physics-level — the buffer still logs whatever
+                # action the policy chose, so training is unaffected.
+                if _ai_active and rays and str_held != 0.0:
+                    WALL_CRITICAL = 0.12   # frac below this = very close to wall
+                    front = rays[:RAY_N]   # first RAY_N = front arc
+                    # rays with rel_angle < 0 are on the left side, > 0 on right
+                    if str_held < 0:       # steering left → check left-side rays
+                        side_fracs = [r['frac'] for r in front
+                                      if r.get('rel_angle', 0.0) < 0]
+                    else:                  # steering right → check right-side rays
+                        side_fracs = [r['frac'] for r in front
+                                      if r.get('rel_angle', 0.0) > 0]
+                    if side_fracs and min(side_fracs) < WALL_CRITICAL:
+                        str_held = -str_held   # flip: counter-steer
 
                 car.update(thr_held, brake_held, str_held, sub_dt,
                            ai_mode=_ai_active)
@@ -1046,17 +1196,17 @@ def main():
                     crashed = False
 
 
-            # ── poll save request OUTSIDE the substep loop ──
-            # Must be here so PPOTrainer.step()'s file-write can't erase the
-            # save_request that dashboard.py injected.
-            if _ai_active and _trainer and _training_state_path:
+            # ── poll save request (visual mode only) ──
+            # In headless mode there is no dashboard injecting save_request,
+            # and reading the JSON file every loop iteration at full CPU speed
+            # is a major bottleneck (thousands of file reads per second).
+            if not HEADLESS and _ai_active and _trainer and _training_state_path:
                 try:
                     with open(_training_state_path) as _sf:
                         _st = json.load(_sf)
                     req = _st.pop("save_request", None)
                     if req:
                         saved_path = _trainer.agent.save_npz(req)
-                        # Put a confirmation back so dashboard sees it
                         _st["last_saved"] = req
                         with open(_training_state_path, "w") as _sf:
                             json.dump(_st, _sf)
@@ -1064,40 +1214,64 @@ def main():
                     pass
 
             rays = compute_rays(car, left_pts, right_pts)
-            _write_shared_state(car, rays)
+            if not HEADLESS:
+                _write_shared_state(car, rays)
 
-        # ── status timer ──
-        if status_timer > 0:
-            status_timer -= 1
-        else:
-            status = ""
+        # ── status timer (visual only) ──
+        if not HEADLESS:
+            if status_timer > 0:
+                status_timer -= 1
+            else:
+                status = ""
 
-        # ── render ──
-        canvas.fill(BG)
-        draw_grid(canvas)
+        # ── headless terminal progress ──
+        if HEADLESS and _trainer:
+            ep = _trainer.agent.episode
+            if ep != _last_print_ep and ep % 10 == 0:
+                _last_print_ep = ep
+                st = _trainer.agent.total_steps
+                best = _trainer.agent.best_reward
+                coef = _trainer.agent.entropy_coef
+                last_r = (_trainer.agent.reward_history[-1]
+                          if _trainer.agent.reward_history else 0.0)
+                print(f"[ep {ep:>6}]  steps={st:>8}  "
+                      f"last_r={last_r:>8.2f}  best={best:>8.2f}  "
+                      f"ent={coef:.4f}")
 
-        if map_data:
-            draw_road(canvas, map_data)
-        else:
-            msg = font.render("No map loaded — press O or click Open Map", True, HINT_COL)
-            canvas.blit(msg, (CANVAS_W // 2 - msg.get_width() // 2,
-                               WIN_H  // 2 - msg.get_height() // 2))
+        # ── render (visual mode only) ──
+        if not HEADLESS:
+            canvas.fill(BG)
+            draw_grid(canvas)
 
-        if car:
-            if rays:
-                draw_rays_map(canvas, car, rays)
-            car.draw(canvas)
-            draw_car_telemetry_overlay(canvas, font, small_font, car)
+            if map_data:
+                draw_road(canvas, map_data)
+            else:
+                msg = font.render("No map loaded — press O or click Open Map", True, HINT_COL)
+                canvas.blit(msg, (CANVAS_W // 2 - msg.get_width() // 2,
+                                   WIN_H  // 2 - msg.get_height() // 2))
 
-        screen.blit(canvas, (0, 0))
-        draw_sidebar(screen, font, small_font, map_data, filename,
-                     status, car is not None, ai_active=_ai_active)
+            if car:
+                if rays:
+                    draw_rays_map(canvas, car, rays)
+                car.draw(canvas)
+                draw_car_telemetry_overlay(canvas, font, small_font, car)
 
-        pygame.display.flip()
+            screen.blit(canvas, (0, 0))
+            draw_sidebar(screen, font, small_font, map_data, filename,
+                         status, car is not None, ai_active=_ai_active)
+
+            pygame.display.flip()
 
 
 if __name__ == "__main__":
     try:
         main()
     finally:
+        if _trainer and HEADLESS:
+            print("\n[headless] Saving final checkpoint...")
+            try:
+                path = _trainer.agent.save_npz("headless_exit")
+                print(f"[headless] Saved  →  {path}")
+            except Exception as _e:
+                print(f"[headless] Save failed: {_e}")
         _kill_dashboard()
