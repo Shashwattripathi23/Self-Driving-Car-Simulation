@@ -978,10 +978,13 @@ def main():
             sub_dt   = dt / substeps
 
             for _ in range(substeps):
+                # Recompute rays every substep so the policy sees current wall
+                # distances.  Without this, rays stays [] for the whole frame
+                # and the agent is completely blind to road geometry.
+                if map_data and left_pts and right_pts:
+                    rays = compute_rays(car, left_pts, right_pts)
+
                 if _ai_active and _trainer:
-                    # signal_crash carries the crash detected in the PREVIOUS
-                    # substep so the trainer sees it BEFORE the car is respawned.
-                    # This is what actually increments the episode counter.
                     thr_held, brake_held, str_held = _trainer.step(
                         rays, car.speed, car.steer, signal_crash, sub_dt,
                         training_state_path=_training_state_path,

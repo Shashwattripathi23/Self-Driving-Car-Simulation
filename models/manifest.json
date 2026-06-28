@@ -138,5 +138,96 @@
     "episode": 1207,
     "best_reward": 1042.898,
     "file": "ppo_aws.npz"
+  },
+  {
+    "label": "20260629_031119",
+    "timestamp": "20260629_031119",
+    "episode": 750,
+    "best_reward": 967.64,
+    "file": "ppo_20260629_031119.npz"
+  },
+  {
+    "label": "last versons_b4_new",
+    "timestamp": "20260629_031800",
+    "episode": 867,
+    "best_reward": 1108.879,
+    "file": "ppo_last versons_b4_new.npz"
+  },
+  {
+    "label": "20260629_032216",
+    "timestamp": "20260629_032216",
+    "episode": 150,
+    "best_reward": 315.506,
+    "file": "ppo_20260629_032216.npz"
+  },
+  {
+    "label": "20260629_032507",
+    "timestamp": "20260629_032507",
+    "episode": 300,
+    "best_reward": 315.506,
+    "file": "ppo_20260629_032507.npz"
+  },
+  {
+    "label": "20260629_033958",
+    "timestamp": "20260629_033958",
+    "episode": 150,
+    "best_reward": 718.246,
+    "file": "ppo_20260629_033958.npz"
+  },
+  {
+    "label": "20260629_034534",
+    "timestamp": "20260629_034534",
+    "episode": 300,
+    "best_reward": 808.589,
+    "file": "ppo_20260629_034534.npz"
+  },
+  {
+    "label": "20260629_035011",
+    "timestamp": "20260629_035011",
+    "episode": 450,
+    "best_reward": 1196.119,
+    "file": "ppo_20260629_035011.npz"
+  },
+  {
+    "label": "20260629_035305",
+    "timestamp": "20260629_035305",
+    "episode": 600,
+    "best_reward": 1196.119,
+    "file": "ppo_20260629_035305.npz"
+  },
+  {
+    "label": "20260629_035617",
+    "timestamp": "20260629_035617",
+    "episode": 750,
+    "best_reward": 1196.119,
+    "file": "ppo_20260629_035617.npz"
+  },
+  {
+    "label": "20260629_040644",
+    "timestamp": "20260629_040644",
+    "episode": 150,
+    "best_reward": 1433.551,
+    "file": "ppo_20260629_040644.npz"
+  },
+  {
+    "label": "20260629_041003",
+    "timestamp": "20260629_041003",
+    "episode": 300,
+    "best_reward": 1433.551,
+    "file": "ppo_20260629_041003.npz"
+  },
+  {
+    "label": "20260629_041734",
+    "timestamp": "20260629_041734",
+    "episode": 450,
+    "best_reward": 1491.011,
+    "file": "ppo_20260629_041734.npz"
+  },
+  {
+    "label": "20260629_042213",
+    "timestamp": "20260629_042213",
+    "episode": 150,
+    "best_reward": 92.592,
+    "file": "ppo_20260629_042213.npz"
   }
 ]
