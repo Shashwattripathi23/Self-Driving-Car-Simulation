@@ -75,5 +75,33 @@
     "episode": 97,
     "best_reward": 822.726,
     "file": "ppo_best_version_modelV2.npz"
+  },
+  {
+    "label": "modelv3",
+    "timestamp": "20260629_013704",
+    "episode": 252,
+    "best_reward": 822.726,
+    "file": "ppo_modelv3.npz"
+  },
+  {
+    "label": "modelv4",
+    "timestamp": "20260629_013725",
+    "episode": 254,
+    "best_reward": 822.726,
+    "file": "ppo_modelv4.npz"
+  },
+  {
+    "label": "modelv5",
+    "timestamp": "20260629_014535",
+    "episode": 362,
+    "best_reward": 822.726,
+    "file": "ppo_modelv5.npz"
+  },
+  {
+    "label": "modelv6",
+    "timestamp": "20260629_015236",
+    "episode": 455,
+    "best_reward": 951.836,
+    "file": "ppo_modelv6.npz"
   }
 ]
