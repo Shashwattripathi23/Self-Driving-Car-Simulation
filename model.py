@@ -21,20 +21,23 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 OBS_DIM      = 22
 ACT_DIM      = 9
 HIDDEN       = 128
-GAMMA        = 0.995  # decisions are now ~60 Hz (frame-skip), so ~3 s horizon
+GAMMA        = 0.995  # decisions are ~60 Hz (frame-skip), so ~3 s horizon
 LAM          = 0.95
 CLIP_EPS     = 0.2
-LR_ACTOR     = 5e-4
+LR_ACTOR     = 3e-4
 LR_CRITIC    = 1e-3
-ENTROPY_COEF = 0.05   # higher than before — keeps policy exploratory for longer
-ENTROPY_DECAY= 0.9995  # slower decay so entropy doesn't bottom out too quickly
-ENTROPY_MIN  = 0.01   # floor: policy never becomes fully deterministic
-EXPLORE_EPS  = 0.08   # ε-greedy on top of stochastic policy (8% fully-random actions)
-ACTOR_CLIP   = 1.0
-CRITIC_CLIP  = 0.5
-EPOCHS       = 5
-BATCH_SIZE   = 256
-UPDATE_EVERY = 2048
+ENTROPY_COEF = 0.05
+ENTROPY_MIN  = 0.01
+EPOCHS       = 4
+UPDATE_EVERY = 4096      # decisions per PPO update (notebook: 32768 = 256 cars x 128 steps)
+MINIBATCHES  = 8         # minibatches per epoch (same ratio as the notebook: 32768 / 4096)
+# Notebook decays the entropy bonus by 0.9985 per 32768 decisions; scale so the schedule
+# per DECISION is identical even though updates here are smaller.
+ENTROPY_DECAY= 0.9985 ** (UPDATE_EVERY / 32768)
+TARGET_KL    = 0.03      # stop an update early if the policy moved too far
+MAX_GRAD     = 0.5       # global gradient-norm clip (actor + critic together)
+MAX_EP_STEPS = 1800      # 30 s episode cap, treated as truncation (bootstrapped), not failure
+CRASH_PENALTY= -15.0
 
 # ── Action map ─────────────────────────────────────────────────
 COAST=0; THROTTLE=1; BRAKE=2; LEFT=3; RIGHT=4
@@ -58,8 +61,12 @@ def softmax_2d(X):
     E = np.exp(X - X.max(axis=1, keepdims=True))
     return E / E.sum(axis=1, keepdims=True)
 
-def he(fi, fo):
-    return np.random.randn(fi, fo) * math.sqrt(2.0 / fi)
+def orthogonal(fi, fo, gain):
+    """Orthogonal init for a (fi, fo) weight matrix, like torch.nn.init.orthogonal_."""
+    A = np.random.randn(max(fi, fo), min(fi, fo))
+    Q, R = np.linalg.qr(A)
+    Q = Q * np.sign(np.diag(R))
+    return gain * (Q if fi >= fo else Q.T)
 
 def clip_grads(gs, mx):
     norm = math.sqrt(sum(float(np.sum(g**2)) for g in gs))
@@ -113,10 +120,11 @@ class RunningNorm:
 # ── MLP ────────────────────────────────────────────────────────
 
 class MLP:
-    def __init__(self, in_dim, hid, out_dim):
-        self.W1 = he(in_dim, hid);  self.b1 = np.zeros(hid)
-        self.W2 = he(hid,    hid);  self.b2 = np.zeros(hid)
-        self.W3 = he(hid, out_dim); self.b3 = np.zeros(out_dim)
+    def __init__(self, in_dim, hid, out_dim, out_gain=1.0):
+        g = math.sqrt(2.0)
+        self.W1 = orthogonal(in_dim, hid, g);        self.b1 = np.zeros(hid)
+        self.W2 = orthogonal(hid,    hid, g);        self.b2 = np.zeros(hid)
+        self.W3 = orthogonal(hid, out_dim, out_gain); self.b3 = np.zeros(out_dim)
         self._c = {}
 
     def forward(self, x):
@@ -158,7 +166,7 @@ class MLP:
 # ── Adam ───────────────────────────────────────────────────────
 
 class Adam:
-    def __init__(self, params, lr=1e-3, b1=0.9, b2=0.999, eps=1e-8):
+    def __init__(self, params, lr=1e-3, b1=0.9, b2=0.999, eps=1e-5):
         self.lr=lr; self.b1=b1; self.b2=b2; self.eps=eps
         self.m=[np.zeros_like(p) for p in params]
         self.v=[np.zeros_like(p) for p in params]
@@ -192,8 +200,8 @@ class PPOAgent:
     def __init__(self, max_speed=180.0, max_steer_deg=28.0):
         self.max_speed     = max_speed
         self.max_steer_deg = max_steer_deg
-        self.actor  = MLP(OBS_DIM, HIDDEN, ACT_DIM)
-        self.critic = MLP(OBS_DIM, HIDDEN, 1)
+        self.actor  = MLP(OBS_DIM, HIDDEN, ACT_DIM, out_gain=0.01)
+        self.critic = MLP(OBS_DIM, HIDDEN, 1,       out_gain=1.0)
         self.actor_opt  = Adam(self.actor.params(),  lr=LR_ACTOR)
         self.critic_opt = Adam(self.critic.params(), lr=LR_CRITIC)
         self.entropy_coef   = ENTROPY_COEF
@@ -238,39 +246,13 @@ class PPOAgent:
 
     # ── reward ─────────────────────────────────────────────────
 
-    def compute_reward(self, speed, rays, crashed, dt, steer=0.0):
+    def compute_reward(self, speed, lat_norm, fwd, crashed):
+        """Same reward as the notebook.
+        lat_norm = distance from centre line / half lane width,
+        fwd      = cos(angle between heading and the road direction of travel)."""
         if crashed:
-            return -15.0
-        fracs    = [r['frac'] if isinstance(r, dict) else float(r)
-                    for r in (rays or [])]
-        min_f    = min(fracs) if fracs else 1.0
-        sn       = max(0.0, speed) / self.max_speed   # reverse earns nothing
-        wall_pen = max(0.0, (0.25 - min_f) * 10.0) if min_f < 0.25 else 0.0
-
-        steer_bon = 0.0
-        if rays and isinstance(rays[0], dict):
-            front = rays[:len(rays)//2]
-            if front:
-                total_w = sum(r.get('frac', 1.0) for r in front)
-                if total_w > 1e-6:
-                    best_angle_deg = sum(r.get('frac', 1.0) * math.degrees(r.get('rel_angle', 0.0))
-                                          for r in front) / total_w
-                else:
-                    best_angle_deg = 0.0
-                steer_deg = math.degrees(steer)
-                if abs(best_angle_deg) < 5.0:
-                    match = 1.0 - min(1.0, abs(steer_deg) / self.max_steer_deg)
-                else:
-                    target_strength = min(1.0, abs(best_angle_deg) / self.max_steer_deg)
-                    same_sign = (steer_deg * best_angle_deg) > 0
-                    match = (min(1.0, abs(steer_deg) / self.max_steer_deg) * target_strength
-                             if same_sign else 0.0)
-                steer_bon = 1.2 * sn * match
-
-        return float(sn * 3.0
-                     - max(0.0, (0.20 - sn) * 5.0)
-                     - wall_pen + steer_bon
-                     + 0.02 * dt * (1.0 + sn))
+            return CRASH_PENALTY
+        return float(3.0 * speed * fwd / self.max_speed - 2.0 * lat_norm ** 2)
 
     # ── GAE ────────────────────────────────────────────────────
 
@@ -309,63 +291,67 @@ class PPOAgent:
 
         self.ret_norm.update(ret)
         ret_n = self.ret_norm.norm(ret)
+        adv   = (adv - adv.mean()) / (adv.std() + 1e-8)      # normalised over the whole batch
 
+        N  = len(buffer)
+        mb = max(N // MINIBATCHES, 16)
         ta = tc = te = nu = 0.0
 
         for _ in range(EPOCHS):
-            for bi in [np.random.permutation(len(buffer))[s:s+BATCH_SIZE]
-                       for s in range(0, len(buffer), BATCH_SIZE)]:
+            kls = []
+            perm = np.random.permutation(N)
+            for s in range(0, N, mb):
+                bi = perm[s:s+mb]
                 if len(bi) < 4: continue
-                N = len(bi)
+                n = len(bi)
                 bo, ba, bl = obs[bi], acts[bi], lpo[bi]
-                bA = adv[bi]; bA = (bA - bA.mean()) / (bA.std() + 1e-8)
-                bR = ret_n[bi]
+                bA, bR = adv[bi], ret_n[bi]
 
-                # ── Actor ──
+                # ── Actor (per-sample gradients; backward_batch averages them) ──
                 logits = self.actor.forward_batch(bo)
                 probs  = softmax_2d(logits)
                 probs  = np.clip(probs, 1e-8, 1.0)
                 probs /= probs.sum(1, keepdims=True)
 
-                lp_new = np.log(probs[np.arange(N), ba])
-                ratio  = np.exp(lp_new - bl)
+                lp_new = np.log(probs[np.arange(n), ba])
+                logr   = lp_new - bl
+                ratio  = np.exp(logr)
                 rc     = np.clip(ratio, 1-CLIP_EPS, 1+CLIP_EPS)
+                kls.append(float(np.mean((ratio - 1.0) - logr)))
 
-                # Correct clipped surrogate gradient:
-                # grad is -bA where unclipped surr < clipped surr, else 0.
                 surr1  = ratio * bA
                 surr2  = rc * bA
-                # Active mask: unclipped term is the minimum (i.e., not clipped)
-                active = (surr1 <= surr2).astype(np.float64)
-                d_ratio = -bA * active          # 0 where clip is binding
-                d_lp    = ratio * d_ratio
+                active = (surr1 <= surr2).astype(np.float64)   # 0 where the clip is binding
+                d_lp   = ratio * (-bA * active)
 
                 d_logits = -probs.copy()
-                d_logits[np.arange(N), ba] += 1.0
-                d_logits *= d_lp[:, None]; d_logits /= N
+                d_logits[np.arange(n), ba] += 1.0
+                d_logits *= d_lp[:, None]
 
-                # Entropy gradient (maximize entropy = subtract from loss grad)
                 ent    = -np.sum(probs * np.log(probs+1e-8), 1)
                 d_ent  = probs * (np.log(probs+1e-8) + 1.0)
-                d_ent -= d_ent.sum(1, keepdims=True) * probs
-                d_ent /= N
-                # d_ent is -dH/dz, and loss = pg - coef*H  =>  dL/dz = pg + coef*d_ent
-                d_logits += self.entropy_coef * d_ent
+                d_ent -= d_ent.sum(1, keepdims=True) * probs    # = -dH/dz
+                d_logits += self.entropy_coef * d_ent           # loss = pg - coef*H
 
-                aloss  = float(-(np.minimum(surr1, surr2).mean()) - self.entropy_coef * ent.mean())
-                ag = clip_grads(self.actor.backward_batch(d_logits), ACTOR_CLIP)
-                self.actor_opt.step(self.actor.params(), ag)
+                aloss = float(-(np.minimum(surr1, surr2).mean()) - self.entropy_coef * ent.mean())
+                ag = self.actor.backward_batch(d_logits)
 
-                # ── Critic ──
-                vp    = self.critic.forward_batch(bo)[:,0]
-                closs = float(np.mean((vp - bR)**2))
-                d_vp  = 2.0*(vp - bR)[:,None] / N
-                cg = clip_grads(self.critic.backward_batch(d_vp), CRITIC_CLIP)
-                self.critic_opt.step(self.critic.params(), cg)
+                # ── Critic: 0.5 * MSE on normalised returns ──
+                vp    = self.critic.forward_batch(bo)[:, 0]
+                closs = float(0.5 * np.mean((vp - bR)**2))
+                cg    = self.critic.backward_batch((vp - bR)[:, None])
 
-                ta+=aloss; tc+=closs; te+=float(ent.mean()); nu+=1
+                # ── One global gradient-norm clip over actor + critic, then step ──
+                clipped = clip_grads(ag + cg, MAX_GRAD)
+                self.actor_opt.step(self.actor.params(),  clipped[:len(ag)])
+                self.critic_opt.step(self.critic.params(), clipped[len(ag):])
 
-        self.entropy_coef = max(ENTROPY_MIN, self.entropy_coef*ENTROPY_DECAY)
+                ta += aloss; tc += closs; te += float(ent.mean()); nu += 1
+
+            if kls and np.mean(kls) > 1.5 * TARGET_KL:          # policy moved too far: stop epochs
+                break
+
+        self.entropy_coef = max(ENTROPY_MIN, self.entropy_coef * ENTROPY_DECAY)
         n = max(nu, 1)
         return ta/n, tc/n, te/n
 
@@ -511,6 +497,7 @@ class PPOTrainer:
         self.last_lp    = None
         self.last_val   = None
         self.last_steer = 0.0
+        self.reset_requested = False   # set when an episode hit MAX_EP_STEPS: caller must respawn the car
         self.stats = {
             "episode":        agent.episode,
             "ep_reward":      0.0,
@@ -523,27 +510,35 @@ class PPOTrainer:
             "running":        True,
         }
 
-    def step(self, rays, speed, steer, crashed, dt,
+    def step(self, rays, speed, steer, crashed, dt, track=(0.0, 1.0),
              training_state_path=None):
+        """Call once per decision (frame).  track = (lateral offset / half lane width,
+        cos(heading vs road direction)) - used ONLY for the reward, never fed to the policy.
+        If self.reset_requested is True afterwards, respawn the car and call step() again."""
         obs = self.agent.build_obs(rays, speed, steer)
+        self.reset_requested = False
+        episode_end = truncated = False
 
-        # Store previous transition (reward uses current steer, not last)
+        # Store previous transition (reward is for the state the last action led to)
         if self.last_obs is not None:
-            r = self.agent.compute_reward(speed, rays, crashed, dt, steer)
-            self.buffer.append((self.last_obs, self.last_act,
-                                self.last_lp, r, self.last_val, crashed))
+            r = self.agent.compute_reward(speed, track[0], track[1], crashed)
             self.ep_reward += r
             self.ep_steps  += 1
+            truncated = (not crashed) and self.ep_steps >= MAX_EP_STEPS
+            if truncated:   # time limit is not a failure: bootstrap the value of where we stopped
+                r += GAMMA * self.agent.ret_norm.denorm(float(self.agent.critic.forward(obs)[0]))
+            episode_end = crashed or truncated
+            self.buffer.append((self.last_obs, self.last_act,
+                                self.last_lp, r, self.last_val, episode_end))
 
-        # Episode end
-        if crashed and self.last_obs is not None:
+        if episode_end:
             self.agent.episode     += 1
             self.agent.total_steps += self.ep_steps
             self.agent.reward_history.append(round(self.ep_reward, 3))
             if self.ep_reward > self.agent.best_reward:
                 self.agent.best_reward = self.ep_reward
 
-            # Update when buffer is large enough; last_val=0 because episode ended (terminal)
+            # the last transition is marked done, so last_val is irrelevant here
             if len(self.buffer) >= UPDATE_EVERY:
                 al, cl, _ = self.agent.update(self.buffer, last_val=0.0)
                 self.buffer.clear()
@@ -562,9 +557,13 @@ class PPOTrainer:
             self.ep_reward = 0.0
             self.ep_steps  = 0
 
+            if truncated:   # the car is still on the old episode: ask the caller to respawn
+                self.last_obs = None
+                self.reset_requested = True
+                return PPOAgent.action_to_controls(COAST)
+
         # Flush buffer mid-episode if it hits UPDATE_EVERY (non-terminal truncation)
         elif len(self.buffer) >= UPDATE_EVERY:
-            # Bootstrap from current obs value
             raw_last_val = float(self.agent.critic.forward(obs)[0])
             last_val     = self.agent.ret_norm.denorm(raw_last_val)
             al, cl, _ = self.agent.update(self.buffer, last_val=last_val)

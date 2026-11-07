@@ -32,7 +32,7 @@ from tkinter import filedialog, messagebox
 # ── Shared simulation utilities from map_reader ─────────────────
 from map_reader import (
     load_map, MapCar, spawn_car_on_road, compute_rays,
-    enforce_road_boundary, draw_road, draw_rays_map, draw_grid,
+    enforce_road_boundary, draw_road, draw_rays_map, draw_grid, track_state,
     open_file_dialog,
     WIN_W, WIN_H, CANVAS_W, SIDEBAR_W, FPS, AI_SUBSTEPS, AI_MAX_SPEED,
     BG, ROAD_SURF, EDGE_COL, CENTER_COL,
@@ -328,6 +328,8 @@ def main():
 
     left_pts   = []
     right_pts  = []
+    center_pts = []
+    half_w     = 30.0
 
     # Episode tracking
     ep_num     = 0
@@ -360,12 +362,14 @@ def main():
     def do_open_map(path):
         nonlocal map_data, filename, car, left_pts, right_pts
         nonlocal agent, model_active, model_name, status, status_timer
-        nonlocal spawn_pos
+        nonlocal spawn_pos, center_pts, half_w
         map_data, err = load_map(path)
         if map_data:
             filename  = os.path.basename(path)
             left_pts  = [tuple(p) for p in map_data.get("left",  [])]
             right_pts = [tuple(p) for p in map_data.get("right", [])]
+            center_pts = [tuple(p) for p in map_data.get("center", [])]
+            half_w    = float(map_data.get("lane_width", 60)) / 2
             car       = None
             spawn_pos = None
             status    = f"Loaded: {filename}"
@@ -520,15 +524,12 @@ def main():
                                        car.y - ep_start_y)
                 ep_start_x, ep_start_y = car.x, car.y
 
-                # Simple reward display (same formula as training, for comparability)
-                if rays:
-                    fracs = [r['frac'] if isinstance(r, dict) else float(r) for r in rays]
-                    min_f = min(fracs) if fracs else 1.0
-                    sn    = abs(car.speed) / (agent.max_speed if agent else 180.0)
-                    wall_pen = max(0.0, (0.25 - min_f) * 10.0) if min_f < 0.25 else 0.0
-                    r_step   = sn * 3.0 - wall_pen
-                    if crashed: r_step -= 15.0
-                    ep_reward += r_step
+                # Reward display: same formula as training (per decision = 1/AI_SUBSTEPS per substep)
+                if len(center_pts) > 1:
+                    lat_n, fwd = track_state(car, center_pts, half_w)
+                    ms = agent.max_speed if agent else AI_MAX_SPEED
+                    r_step = -15.0 if crashed else 3.0 * car.speed * fwd / ms - 2.0 * lat_n ** 2
+                    ep_reward += r_step / AI_SUBSTEPS
 
                 # Stall detection
                 moved = math.hypot(car.x - stall_x, car.y - stall_y)

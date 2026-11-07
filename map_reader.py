@@ -249,7 +249,8 @@ def draw_rays_map(surf, car, rays):
 # ── Car class (self-contained, scaled for the map canvas) ─────
 
 class MapCar:
-    def __init__(self, x, y, heading=0.0):
+    def __init__(self, x, y, heading=0.0, dirn=1):
+        self.dirn    = dirn          # +1 = driving along the drawn direction of the road, -1 = against it
         self.x       = float(x)
         self.y       = float(y)
         self.heading = float(heading)
@@ -505,8 +506,9 @@ def load_map(filepath):
         return None, f"File error: {e}"
 
 
-def spawn_car_on_road(map_data):
-    """Pick a random center-line segment, spawn car there, heading along the road."""
+def spawn_car_on_road(map_data, reverse=False):
+    """Pick a random center-line segment, spawn car there, heading along the road
+    (or against the drawn direction when reverse=True)."""
     center = [tuple(p) for p in map_data.get("center", [])]
     if len(center) < 2:
         return None
@@ -518,7 +520,31 @@ def spawn_car_on_road(map_data):
     sy = ay + t * (by - ay)
     # heading along the road segment
     heading = math.atan2(by - ay, bx - ax)
+    if reverse:
+        return MapCar(sx, sy, heading + math.pi, dirn=-1)
     return MapCar(sx, sy, heading)
+
+
+def random_ai_car(map_data):
+    """Fresh training episode: random spot on the road, random direction, 25% of top speed."""
+    c = spawn_car_on_road(map_data, reverse=random.random() < 0.5)
+    if c:
+        c.speed = AI_MAX_SPEED * 0.25
+    return c
+
+
+def track_state(car, center_pts, half_w):
+    """(lateral offset / half lane width, cos of heading vs road direction) for the reward.
+    Uses the true centre line - training signal only, never an input to the policy."""
+    best_d, best_i = 1e18, 0
+    for i in range(len(center_pts) - 1):
+        d, _ = point_segment_dist(car.x, car.y, *center_pts[i], *center_pts[i + 1])
+        if d < best_d:
+            best_d, best_i = d, i
+    (ax, ay), (bx, by) = center_pts[best_i], center_pts[best_i + 1]
+    ln = max(math.hypot(bx - ax, by - ay), 1e-6)
+    fwd = car.dirn * (math.cos(car.heading) * (bx - ax) / ln + math.sin(car.heading) * (by - ay) / ln)
+    return best_d / half_w, fwd
 
 
 # ── Sidebar button rects (updated each frame) ──────────────────
@@ -1006,6 +1032,8 @@ def main():
 
     left_pts  = []
     right_pts = []
+    center_pts = []
+    half_w = 30.0
     _last_print_ep = 0   # for headless terminal progress
 
     while True:
@@ -1106,6 +1134,8 @@ def main():
             if map_data and not left_pts:
                 left_pts  = [tuple(p) for p in map_data.get("left",  [])]
                 right_pts = [tuple(p) for p in map_data.get("right", [])]
+                center_pts = [tuple(p) for p in map_data.get("center", [])]
+                half_w = float(map_data.get("lane_width", 60)) / 2
 
             substeps = AI_SUBSTEPS if _ai_active else 1
             sub_dt   = dt / substeps
@@ -1121,14 +1151,26 @@ def main():
                 # or immediately after a crash so the terminal flag is delivered.
                 # Between decisions the chosen controls are held.
                 if _ai_active and _trainer and (_sub == 0 or signal_crash):
+                    trk = track_state(car, center_pts, half_w) if len(center_pts) > 1 else (0.0, 1.0)
                     thr_held, brake_held, str_held = _trainer.step(
-                        rays, car.speed, car.steer, signal_crash, dt,
+                        rays, car.speed, car.steer, signal_crash, dt, track=trk,
                         # In headless mode pass None so the trainer skips
                         # JSON file I/O on every substep (was thousands/sec).
                         training_state_path=(None if HEADLESS
                                              else _training_state_path),
                     )
                     signal_crash = False
+                    if _trainer.reset_requested:       # episode hit the 30 s cap: new random start
+                        new_car = random_ai_car(map_data)
+                        if new_car:
+                            car = new_car
+                            _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
+                            rays = compute_rays(car, left_pts, right_pts)
+                            trk  = track_state(car, center_pts, half_w) if len(center_pts) > 1 else (0.0, 1.0)
+                            thr_held, brake_held, str_held = _trainer.step(
+                                rays, car.speed, car.steer, False, dt, track=trk,
+                                training_state_path=(None if HEADLESS
+                                                     else _training_state_path))
 
                     # ── Periodic checkpoint save + random respawn point ──
                     ep = _trainer.agent.episode
@@ -1139,10 +1181,9 @@ def main():
                         # Without updating _ai_spawn here, every crash would
                         # still go back to the ORIGINAL spawn, defeating the
                         # purpose of rotation.
-                        rotated = spawn_car_on_road(map_data)
+                        rotated = random_ai_car(map_data)
                         if rotated:
                             _ai_spawn = (rotated.x, rotated.y, rotated.heading)
-                            rotated.speed = AI_MAX_SPEED * 0.25
                             car = rotated
                             _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
 
@@ -1197,7 +1238,7 @@ def main():
                 if crashed and _ai_active and _trainer:
                     signal_crash = True
                     # Random spawn every episode (avoids memorising one stretch)
-                    new_car = spawn_car_on_road(map_data)
+                    new_car = random_ai_car(map_data)
                     if new_car is None and _ai_spawn is not None:
                         new_car = MapCar(*_ai_spawn)
                     if new_car:
