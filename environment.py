@@ -10,16 +10,19 @@ WIN_W, WIN_H   = 960, 650
 SIDEBAR_W      = 220
 CANVAS_W       = WIN_W - SIDEBAR_W   # 740
 LANE_WIDTH     = 60                  # total road width (px)
-SMOOTH_WINDOW  = 1                  # moving-average kernel size
-SUBSAMPLE      = 4                   # keep every Nth raw point
 MIN_POINTS     = 20                  # minimum points to build a road
+CLOSE_DIST     = 45                  # px: finishing the stroke within this of the start closes the loop
+MIN_LOOP_LEN   = 250                 # px: shortest stroke that can count as a loop
+RESAMPLE_STEP  = 6.0                 # px between points of the final smooth centre line
+SMOOTH_PX      = 18.0                # px: size of the hand-jitter that gets smoothed away (shape is kept)
 
 # ── Colours ────────────────────────────────────────────────────
 BG          = (18,  18,  24)
 ROAD_SURF   = (45,  45,  55)
 EDGE_COL    = (220, 220, 220)
 CENTER_COL  = (255, 220,  60)
-RAW_COL     = (80,  80, 100)
+RAW_COL     = (150, 150, 180)
+CLOSE_COL   = (80,  200, 120)
 SIDEBAR_BG  = (26,  26,  34)
 TEXT_COL    = (180, 180, 190)
 HINT_COL    = (100, 100, 115)
@@ -33,40 +36,55 @@ SAVE_ERR_COL= (220,  80,  80)
 
 # ── Geometry helpers ───────────────────────────────────────────
 
-def subsample(pts, n):
-    return pts[::n]
+def resample_closed(pts, step):
+    """Resample a closed loop at (nearly) uniform arc length."""
+    P = np.asarray(pts, dtype=float)
+    Q = np.vstack([P, P[:1]])
+    seg = np.hypot(np.diff(Q[:, 0]), np.diff(Q[:, 1]))
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    n = max(int(round(s[-1] / step)), 16)
+    t = np.linspace(0.0, s[-1], n, endpoint=False)
+    return np.stack([np.interp(t, s, Q[:, 0]), np.interp(t, s, Q[:, 1])], axis=1)
 
-def smooth(pts, window):
-    """Simple moving-average smoothing over x and y independently."""
-    if len(pts) < window:
-        return pts
-    arr = np.array(pts, dtype=float)
-    kernel = np.ones(window) / window
-    sx = np.convolve(arr[:, 0], kernel, mode='valid')
-    sy = np.convolve(arr[:, 1], kernel, mode='valid')
-    return list(zip(sx, sy))
+def smooth_closed(P, sigma):
+    """Circular Gaussian smoothing (sigma in samples). Wraps around the seam, so the
+    start/finish joint gets blended like any other part of the loop."""
+    n = len(P)
+    r = int(3 * sigma) + 1
+    k = np.arange(-r, r + 1)
+    w = np.exp(-k ** 2 / (2.0 * sigma ** 2)); w /= w.sum()
+    idx = (np.arange(n)[:, None] + k[None, :]) % n
+    return (P[idx] * w[None, :, None]).sum(axis=1)
 
-def perpendicular(a, b):
-    """Unit perpendicular to segment a→b, pointing left."""
-    dx, dy = b[0] - a[0], b[1] - a[1]
-    length = max(np.hypot(dx, dy), 1e-6)
-    return (-dy / length, dx / length)
+def radius_closed(P, k=3):
+    """Radius of curvature at every sample of a closed, evenly sampled loop."""
+    a, b, c = np.roll(P, k, axis=0), P, np.roll(P, -k, axis=0)
+    cross = np.abs((b - a)[:, 0] * (c - a)[:, 1] - (b - a)[:, 1] * (c - a)[:, 0])
+    lens = (np.hypot(*(b - a).T) * np.hypot(*(c - b).T) * np.hypot(*(c - a).T))
+    return lens / (2.0 * np.maximum(cross, 1e-9))
 
-def build_edges(center, half_w):
-    """
-    Given a smoothed centerline, return (left_edge, right_edge)
-    as lists of (x, y) tuples.
-    """
-    left, right = [], []
-    n = len(center)
-    for i in range(n):
-        # use neighbours for a stable perpendicular
-        a = center[max(i - 1, 0)]
-        b = center[min(i + 1, n - 1)]
-        px, py = perpendicular(a, b)
-        cx, cy = center[i]
-        left.append( (cx + px * half_w, cy + py * half_w) )
-        right.append((cx - px * half_w, cy - py * half_w) )
+def smooth_road(raw, half_w):
+    """Raw hand-drawn loop -> smooth, evenly sampled closed centre line with the same overall shape.
+    1) resample evenly and low-pass away the hand jitter (periodic, so the seam is blended too);
+    2) relax only the bends that are too tight for the road width, where the inner edge would
+       fold into sharp shards; 3) resample again so the edges come out evenly spaced."""
+    P = smooth_closed(resample_closed(raw, RESAMPLE_STEP), SMOOTH_PX / RESAMPLE_STEP)
+    r_min = half_w + 4.0
+    for _ in range(400):
+        bad = radius_closed(P) < r_min
+        if not bad.any():
+            break
+        mask = np.clip(smooth_closed(bad.astype(float)[:, None], 2.0)[:, 0] * 4.0, 0.0, 1.0)
+        P = P + mask[:, None] * (smooth_closed(P, 2.0) - P)      # soft, local: shape elsewhere untouched
+    return resample_closed(P, RESAMPLE_STEP)
+
+def build_edges(P, half_w):
+    """Left/right road edges of a closed centre line (offset along the local normal)."""
+    d = np.roll(P, -1, axis=0) - np.roll(P, 1, axis=0)
+    ln = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-6)
+    nx, ny = -d[:, 1] / ln, d[:, 0] / ln
+    left  = np.stack([P[:, 0] + nx * half_w, P[:, 1] + ny * half_w], axis=1)
+    right = np.stack([P[:, 0] - nx * half_w, P[:, 1] - ny * half_w], axis=1)
     return left, right
 
 def draw_dashed_line(surf, color, pts, dash=14, gap=8, width=2):
@@ -122,15 +140,31 @@ class Road:
             return
         self.raw_pts.append(pt)
 
+    def closure_index(self):
+        """Index of the stroke point where the loop closes (None if the stroke does not
+        come back to its start).  Looking at the tail lets an overshoot past the start
+        count as closed too; the overshoot is trimmed off when the road is built."""
+        n = len(self.raw_pts)
+        if n < MIN_POINTS:
+            return None
+        P = np.asarray(self.raw_pts, dtype=float)
+        p0 = P[0]
+        length = np.hypot(np.diff(P[:, 0]), np.diff(P[:, 1])).sum()
+        if length < MIN_LOOP_LEN or np.hypot(*(P - p0).T).max() < 2 * CLOSE_DIST:
+            return None
+        t0 = int(n * 0.65)
+        d = np.hypot(*(P[t0:] - p0).T)
+        return t0 + int(np.argmin(d)) if d.min() <= CLOSE_DIST else None
+
     def build(self):
-        if len(self.raw_pts) < MIN_POINTS:
+        j = self.closure_index()
+        if j is None:
             return False
-        sub    = subsample(self.raw_pts, SUBSAMPLE)
-        center = smooth(sub, SMOOTH_WINDOW)
-        if len(center) < 2:
-            return False
-        self.center = center
-        self.left, self.right = build_edges(center, LANE_WIDTH // 2)
+        half_w = LANE_WIDTH / 2
+        P = smooth_road(np.asarray(self.raw_pts[:j + 1], dtype=float), half_w)
+        left, right = build_edges(P, half_w)
+        close = lambda a: [tuple(p) for p in np.vstack([a, a[:1]])]   # explicit closed loop
+        self.center, self.left, self.right = close(P), close(left), close(right)
         return True
 
     def finalize(self):
@@ -159,13 +193,16 @@ class Road:
             draw_dashed_line(surf, CENTER_COL, self.center)
 
     def draw_preview(self, surf):
-        """Draw the raw stroke while user is still drawing."""
+        """While drawing: only the raw stroke and a start ring (no road yet).
+        The ring turns green once releasing the mouse would close the loop."""
         if len(self.raw_pts) >= 2:
             pygame.draw.lines(surf, RAW_COL, False,
                               [(int(x), int(y)) for x, y in self.raw_pts], 2)
-        # live smooth preview
-        if self.build() and len(self.center) >= 2:
-            self.draw(surf)
+        if self.raw_pts:
+            col = CLOSE_COL if self.closure_index() is not None else RAW_COL
+            x0, y0 = self.raw_pts[0]
+            pygame.draw.circle(surf, col, (int(x0), int(y0)), CLOSE_DIST, 1)
+            pygame.draw.circle(surf, col, (int(x0), int(y0)), 4)
 
 
 # ── Save / Load helpers ────────────────────────────────────────
@@ -177,6 +214,7 @@ def save_map(road):
 
     data = {
         "version": 1,
+        "closed": True,
         "lane_width": LANE_WIDTH,
         "canvas": {"width": CANVAS_W, "height": WIN_H},
         "center": [[round(x, 2), round(y, 2)] for x, y in road.center],
@@ -219,7 +257,7 @@ def draw_sidebar(surf, font, small_font, road, state_msg, save_status=""):
 
     # status
     status_color = (80, 200, 120) if road.finalized else (200, 160, 60)
-    status_text  = "ROAD READY" if road.finalized else "DRAWING..."
+    status_text  = "ROAD READY" if road.finalized else "DRAW A CLOSED LOOP"
     st = small_font.render(status_text, True, status_color)
     surf.blit(st, (x0 + 14, 52))
 
@@ -271,8 +309,8 @@ def draw_sidebar(surf, font, small_font, road, state_msg, save_status=""):
     hints = [
         "CONTROLS",
         "",
-        "Hold LMB  draw road",
-        "SPACE     finalize",
+        "Hold LMB  draw loop",
+        "green ring closes it",
         "S         save map",
         "R         reset",
         "ESC       quit",
@@ -325,11 +363,8 @@ def main():
                     save_status  = ""
 
                 elif event.key == pygame.K_SPACE:
-                    if not road.finalized and len(road.raw_pts) >= MIN_POINTS:
-                        ok = road.finalize()
-                        state_msg = "finalized" if ok else "too short"
-                    elif road.finalized:
-                        state_msg = "finalized"
+                    if not road.finalized and not drawing and road.raw_pts:
+                        state_msg = "loop closed" if road.finalize() else "not closed"
 
                 elif event.key == pygame.K_s:
                     ok, msg = save_map(road)
@@ -361,10 +396,13 @@ def main():
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1 and drawing:
                     drawing = False
-                    if len(road.raw_pts) >= MIN_POINTS:
-                        state_msg = "press SPACE"
-                    else:
+                    # the road is only built (and shown) once the loop is closed
+                    if len(road.raw_pts) < MIN_POINTS:
                         state_msg = "too short"
+                    elif road.finalize():
+                        state_msg = "loop closed"
+                    else:
+                        state_msg = "not closed - redraw"
 
             elif event.type == pygame.MOUSEMOTION:
                 if drawing:
