@@ -327,5 +327,495 @@
     "episode": 1350,
     "best_reward": 461.487,
     "file": "ppo_20260629_052730.npz"
+  },
+  {
+    "label": "20260629_053001",
+    "timestamp": "20260629_053001",
+    "episode": 1500,
+    "best_reward": 616.646,
+    "file": "ppo_20260629_053001.npz"
+  },
+  {
+    "label": "20260629_053234",
+    "timestamp": "20260629_053234",
+    "episode": 1650,
+    "best_reward": 1060.322,
+    "file": "ppo_20260629_053234.npz"
+  },
+  {
+    "label": "20260629_053500",
+    "timestamp": "20260629_053500",
+    "episode": 1800,
+    "best_reward": 1060.322,
+    "file": "ppo_20260629_053500.npz"
+  },
+  {
+    "label": "20260629_053926",
+    "timestamp": "20260629_053926",
+    "episode": 1950,
+    "best_reward": 1238.498,
+    "file": "ppo_20260629_053926.npz"
+  },
+  {
+    "label": "20260629_054550",
+    "timestamp": "20260629_054550",
+    "episode": 2100,
+    "best_reward": 2581.698,
+    "file": "ppo_20260629_054550.npz"
+  },
+  {
+    "label": "20260629_055010",
+    "timestamp": "20260629_055010",
+    "episode": 2250,
+    "best_reward": 2581.698,
+    "file": "ppo_20260629_055010.npz"
+  },
+  {
+    "label": "20260629_055443",
+    "timestamp": "20260629_055443",
+    "episode": 2400,
+    "best_reward": 2581.698,
+    "file": "ppo_20260629_055443.npz"
+  },
+  {
+    "label": "20260629_055840",
+    "timestamp": "20260629_055840",
+    "episode": 2550,
+    "best_reward": 2581.698,
+    "file": "ppo_20260629_055840.npz"
+  },
+  {
+    "label": "20260629_060419",
+    "timestamp": "20260629_060419",
+    "episode": 2700,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_060419.npz"
+  },
+  {
+    "label": "20260629_060810",
+    "timestamp": "20260629_060810",
+    "episode": 2850,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_060810.npz"
+  },
+  {
+    "label": "20260629_061158",
+    "timestamp": "20260629_061158",
+    "episode": 3000,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_061158.npz"
+  },
+  {
+    "label": "20260629_061446",
+    "timestamp": "20260629_061446",
+    "episode": 3150,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_061446.npz"
+  },
+  {
+    "label": "20260629_061809",
+    "timestamp": "20260629_061809",
+    "episode": 3300,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_061809.npz"
+  },
+  {
+    "label": "20260629_062137",
+    "timestamp": "20260629_062137",
+    "episode": 3450,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_062137.npz"
+  },
+  {
+    "label": "20260629_063535",
+    "timestamp": "20260629_063535",
+    "episode": 3600,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_063535.npz"
+  },
+  {
+    "label": "20260629_063951",
+    "timestamp": "20260629_063951",
+    "episode": 3750,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_063951.npz"
+  },
+  {
+    "label": "20260629_064220",
+    "timestamp": "20260629_064220",
+    "episode": 3900,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_064220.npz"
+  },
+  {
+    "label": "20260629_064431",
+    "timestamp": "20260629_064431",
+    "episode": 4050,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_064431.npz"
+  },
+  {
+    "label": "20260629_064714",
+    "timestamp": "20260629_064714",
+    "episode": 4200,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_064714.npz"
+  },
+  {
+    "label": "20260629_065212",
+    "timestamp": "20260629_065212",
+    "episode": 4350,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_065212.npz"
+  },
+  {
+    "label": "20260629_065455",
+    "timestamp": "20260629_065455",
+    "episode": 4500,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_065455.npz"
+  },
+  {
+    "label": "20260629_065641",
+    "timestamp": "20260629_065641",
+    "episode": 4650,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_065641.npz"
+  },
+  {
+    "label": "20260629_070108",
+    "timestamp": "20260629_070108",
+    "episode": 4800,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_070108.npz"
+  },
+  {
+    "label": "20260629_070339",
+    "timestamp": "20260629_070339",
+    "episode": 4950,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_070339.npz"
+  },
+  {
+    "label": "20260629_070620",
+    "timestamp": "20260629_070620",
+    "episode": 5100,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_070620.npz"
+  },
+  {
+    "label": "20260629_070848",
+    "timestamp": "20260629_070848",
+    "episode": 5250,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_070848.npz"
+  },
+  {
+    "label": "20260629_071123",
+    "timestamp": "20260629_071123",
+    "episode": 5400,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_071123.npz"
+  },
+  {
+    "label": "20260629_071637",
+    "timestamp": "20260629_071637",
+    "episode": 5550,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_071637.npz"
+  },
+  {
+    "label": "20260629_072138",
+    "timestamp": "20260629_072138",
+    "episode": 5700,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_072138.npz"
+  },
+  {
+    "label": "20260629_072506",
+    "timestamp": "20260629_072506",
+    "episode": 5850,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_072506.npz"
+  },
+  {
+    "label": "20260629_072756",
+    "timestamp": "20260629_072756",
+    "episode": 6000,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_072756.npz"
+  },
+  {
+    "label": "20260629_073408",
+    "timestamp": "20260629_073408",
+    "episode": 6150,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_073408.npz"
+  },
+  {
+    "label": "20260629_073636",
+    "timestamp": "20260629_073636",
+    "episode": 6300,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_073636.npz"
+  },
+  {
+    "label": "20260629_074041",
+    "timestamp": "20260629_074041",
+    "episode": 6450,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_074041.npz"
+  },
+  {
+    "label": "20260629_074225",
+    "timestamp": "20260629_074225",
+    "episode": 6600,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_074225.npz"
+  },
+  {
+    "label": "20260629_074543",
+    "timestamp": "20260629_074543",
+    "episode": 6750,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_074543.npz"
+  },
+  {
+    "label": "20260629_074843",
+    "timestamp": "20260629_074843",
+    "episode": 6900,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_074843.npz"
+  },
+  {
+    "label": "20260629_075050",
+    "timestamp": "20260629_075050",
+    "episode": 7050,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_075050.npz"
+  },
+  {
+    "label": "20260629_075443",
+    "timestamp": "20260629_075443",
+    "episode": 7200,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_075443.npz"
+  },
+  {
+    "label": "20260629_075850",
+    "timestamp": "20260629_075850",
+    "episode": 7350,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_075850.npz"
+  },
+  {
+    "label": "20260629_080156",
+    "timestamp": "20260629_080156",
+    "episode": 7500,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_080156.npz"
+  },
+  {
+    "label": "20260629_081222",
+    "timestamp": "20260629_081222",
+    "episode": 7650,
+    "best_reward": 2731.02,
+    "file": "ppo_20260629_081222.npz"
+  },
+  {
+    "label": "20260629_081843",
+    "timestamp": "20260629_081843",
+    "episode": 7800,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_081843.npz"
+  },
+  {
+    "label": "20260629_082303",
+    "timestamp": "20260629_082303",
+    "episode": 7950,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_082303.npz"
+  },
+  {
+    "label": "20260629_082546",
+    "timestamp": "20260629_082546",
+    "episode": 8100,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_082546.npz"
+  },
+  {
+    "label": "20260629_082819",
+    "timestamp": "20260629_082819",
+    "episode": 8250,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_082819.npz"
+  },
+  {
+    "label": "20260629_083121",
+    "timestamp": "20260629_083121",
+    "episode": 8400,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_083121.npz"
+  },
+  {
+    "label": "20260629_083329",
+    "timestamp": "20260629_083329",
+    "episode": 8550,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_083329.npz"
+  },
+  {
+    "label": "20260629_084015",
+    "timestamp": "20260629_084015",
+    "episode": 8700,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_084015.npz"
+  },
+  {
+    "label": "20260629_084347",
+    "timestamp": "20260629_084347",
+    "episode": 8850,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_084347.npz"
+  },
+  {
+    "label": "20260629_084850",
+    "timestamp": "20260629_084850",
+    "episode": 9000,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_084850.npz"
+  },
+  {
+    "label": "20260629_085122",
+    "timestamp": "20260629_085122",
+    "episode": 9150,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_085122.npz"
+  },
+  {
+    "label": "20260629_090055",
+    "timestamp": "20260629_090055",
+    "episode": 9300,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_090055.npz"
+  },
+  {
+    "label": "20260629_090408",
+    "timestamp": "20260629_090408",
+    "episode": 9450,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_090408.npz"
+  },
+  {
+    "label": "20260629_092454",
+    "timestamp": "20260629_092454",
+    "episode": 9600,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_092454.npz"
+  },
+  {
+    "label": "20260629_094556",
+    "timestamp": "20260629_094556",
+    "episode": 9750,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_094556.npz"
+  },
+  {
+    "label": "headless_exit",
+    "timestamp": "20260629_101455",
+    "episode": 9898,
+    "best_reward": 2792.325,
+    "file": "ppo_headless_exit.npz"
+  },
+  {
+    "label": "20260629_155221",
+    "timestamp": "20260629_155221",
+    "episode": 9900,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_155221.npz"
+  },
+  {
+    "label": "20260629_155320",
+    "timestamp": "20260629_155320",
+    "episode": 9750,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_155320.npz"
+  },
+  {
+    "label": "20260629_155628",
+    "timestamp": "20260629_155628",
+    "episode": 7800,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_155628.npz"
+  },
+  {
+    "label": "20260629_155814",
+    "timestamp": "20260629_155814",
+    "episode": 9900,
+    "best_reward": 2792.325,
+    "file": "ppo_20260629_155814.npz"
+  },
+  {
+    "label": "20260726_222845",
+    "timestamp": "20260726_222845",
+    "episode": 9900,
+    "best_reward": 2792.325,
+    "file": "ppo_20260726_222845.npz"
+  },
+  {
+    "label": "20260726_223108",
+    "timestamp": "20260726_223108",
+    "episode": 1200,
+    "best_reward": 461.487,
+    "file": "ppo_20260726_223108.npz"
+  },
+  {
+    "label": "20260726_223216",
+    "timestamp": "20260726_223216",
+    "episode": 9900,
+    "best_reward": 2792.325,
+    "file": "ppo_20260726_223216.npz"
+  },
+  {
+    "label": "20260726_223232",
+    "timestamp": "20260726_223232",
+    "episode": 9600,
+    "best_reward": 2792.325,
+    "file": "ppo_20260726_223232.npz"
+  },
+  {
+    "label": "20260726_223356",
+    "timestamp": "20260726_223356",
+    "episode": 4050,
+    "best_reward": 2731.02,
+    "file": "ppo_20260726_223356.npz"
+  },
+  {
+    "label": "20260726_223428",
+    "timestamp": "20260726_223428",
+    "episode": 150,
+    "best_reward": 1157.964,
+    "file": "ppo_20260726_223428.npz"
+  },
+  {
+    "label": "20261107_003506",
+    "timestamp": "20261107_003506",
+    "episode": 9600,
+    "best_reward": 2792.325,
+    "file": "ppo_20261107_003506.npz"
+  },
+  {
+    "label": "circle_final",
+    "timestamp": "20261107_003635",
+    "episode": 3787,
+    "best_reward": 4230.42,
+    "file": "final_circle.npz"
+  },
+  {
+    "label": "multi_final",
+    "timestamp": "20261107_013916",
+    "episode": 16534,
+    "best_reward": 107.898,
+    "file": "multi_final.npz"
   }
 ]

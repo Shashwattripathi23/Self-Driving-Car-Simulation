@@ -97,7 +97,7 @@ FPS          = 60
 CAR_SCALE    = 1.0
 WHEELBASE    = 28.0
 MAX_SPEED    = 180.0
-AI_MAX_SPEED = 480.0   # faster in AI training mode
+AI_MAX_SPEED = 240.0   # AI cap: braking distance (~100px) fits inside ray range (220px)
 MAX_STEER    = math.radians(28)
 STEER_RATE   = math.radians(90)
 STEER_RTN    = math.radians(150)
@@ -106,6 +106,9 @@ AI_ACCEL     = 280.0   # stronger acceleration in AI mode
 BRAKE_F      = 280.0
 DRAG_K       = 1.6
 AI_SUBSTEPS  = 6       # physics steps per render frame in AI mode
+# Hard-coded counter-steer near walls.  Left OFF: a scripted perfect driver crashes
+# 100% of the time with it on at >=160 px/s, and it corrupts the policy's training data.
+SAFETY_OVERRIDE = False
 
 # Car drawing size (half-lengths in px)
 CAR_FL, CAR_RL, CAR_HW = 12, 9, 5   # front-len, rear-len, half-width
@@ -866,6 +869,8 @@ def main():
     global _trainer, _ai_active, _training_state_path, _last_save_episode, \
            _ai_spawn, _stall_x, _stall_y, _stall_timer
 
+    signal_crash = False
+
     pygame.init()   # SDL dummy driver (set above) handles headless display
     screen = pygame.display.set_mode((WIN_W, WIN_H))
     if not HEADLESS:
@@ -1093,7 +1098,8 @@ def main():
         # ── update car ──
         rays         = []
         crashed      = False
-        signal_crash = False
+        # signal_crash must persist across frames: a crash on the last substep
+        # is delivered to the trainer on the first substep of the next frame.
         if car:
             # Road geometry doesn't change — only rebuild when map changes.
             # Rebuilding every frame creates thousands of list objects per second.
@@ -1104,16 +1110,19 @@ def main():
             substeps = AI_SUBSTEPS if _ai_active else 1
             sub_dt   = dt / substeps
 
-            for _ in range(substeps):
+            for _sub in range(substeps):
                 # Recompute rays every substep so the policy sees current wall
                 # distances.  Without this, rays stays [] for the whole frame
                 # and the agent is completely blind to road geometry.
                 if map_data and left_pts and right_pts:
                     rays = compute_rays(car, left_pts, right_pts)
 
-                if _ai_active and _trainer:
+                # Frame-skip: the policy decides once per frame (first substep),
+                # or immediately after a crash so the terminal flag is delivered.
+                # Between decisions the chosen controls are held.
+                if _ai_active and _trainer and (_sub == 0 or signal_crash):
                     thr_held, brake_held, str_held = _trainer.step(
-                        rays, car.speed, car.steer, signal_crash, sub_dt,
+                        rays, car.speed, car.steer, signal_crash, dt,
                         # In headless mode pass None so the trainer skips
                         # JSON file I/O on every substep (was thousands/sec).
                         training_state_path=(None if HEADLESS
@@ -1144,20 +1153,23 @@ def main():
                 # flip str_held to opposite so the car steers away from the wall.
                 # This is purely physics-level — the buffer still logs whatever
                 # action the policy chose, so training is unaffected.
-                if _ai_active and rays and str_held != 0.0:
+                # (uses a per-substep copy so the held policy action isn't
+                # flipped back and forth across repeated substeps)
+                eff_str = str_held
+                if SAFETY_OVERRIDE and _ai_active and rays and eff_str != 0.0:
                     WALL_CRITICAL = 0.12   # frac below this = very close to wall
                     front = rays[:RAY_N]   # first RAY_N = front arc
                     # rays with rel_angle < 0 are on the left side, > 0 on right
-                    if str_held < 0:       # steering left → check left-side rays
+                    if eff_str < 0:        # steering left → check left-side rays
                         side_fracs = [r['frac'] for r in front
                                       if r.get('rel_angle', 0.0) < 0]
                     else:                  # steering right → check right-side rays
                         side_fracs = [r['frac'] for r in front
                                       if r.get('rel_angle', 0.0) > 0]
                     if side_fracs and min(side_fracs) < WALL_CRITICAL:
-                        str_held = -str_held   # flip: counter-steer
+                        eff_str = -eff_str   # flip: counter-steer
 
-                car.update(thr_held, brake_held, str_held, sub_dt,
+                car.update(thr_held, brake_held, eff_str, sub_dt,
                            ai_mode=_ai_active)
                 old_x, old_y = car.x, car.y
                 enforce_road_boundary(car, left_pts, right_pts, margin=6)
@@ -1184,11 +1196,10 @@ def main():
 
                 if crashed and _ai_active and _trainer:
                     signal_crash = True
-                    if _ai_spawn is not None:
-                        sx, sy, sh = _ai_spawn
-                        new_car = MapCar(sx, sy, sh)
-                    else:
-                        new_car = spawn_car_on_road(map_data)
+                    # Random spawn every episode (avoids memorising one stretch)
+                    new_car = spawn_car_on_road(map_data)
+                    if new_car is None and _ai_spawn is not None:
+                        new_car = MapCar(*_ai_spawn)
                     if new_car:
                         new_car.speed = AI_MAX_SPEED * 0.25
                         car = new_car

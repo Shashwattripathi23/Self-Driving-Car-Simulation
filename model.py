@@ -21,7 +21,7 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 OBS_DIM      = 22
 ACT_DIM      = 9
 HIDDEN       = 128
-GAMMA        = 0.99
+GAMMA        = 0.995  # decisions are now ~60 Hz (frame-skip), so ~3 s horizon
 LAM          = 0.95
 CLIP_EPS     = 0.2
 LR_ACTOR     = 5e-4
@@ -34,7 +34,7 @@ ACTOR_CLIP   = 1.0
 CRITIC_CLIP  = 0.5
 EPOCHS       = 5
 BATCH_SIZE   = 256
-UPDATE_EVERY = 1024
+UPDATE_EVERY = 2048
 
 # ── Action map ─────────────────────────────────────────────────
 COAST=0; THROTTLE=1; BRAKE=2; LEFT=3; RIGHT=4
@@ -220,20 +220,13 @@ class PPOAgent:
     def select_action(self, obs):
         # ε-greedy: occasionally take a fully-random action so the policy
         # keeps seeing new states even after it has mostly converged.
-        if np.random.random() < EXPLORE_EPS:
-            action   = np.random.randint(ACT_DIM)
-            # Still need a log_prob for the PPO buffer.  Use the policy’s
-            # actual prob for this action so the importance ratio is correct.
-            logits   = self.actor.forward(obs)
-            probs    = softmax_2d(logits[None])[0]
-            probs    = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
-            log_prob = float(np.log(probs[action]))
-        else:
-            logits   = self.actor.forward(obs)
-            probs    = softmax_2d(logits[None])[0]
-            probs    = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
-            action   = int(np.random.choice(len(probs), p=probs))
-            log_prob = float(np.log(probs[action]))
+        # Pure on-policy sampling (no ε-greedy: it made the data off-policy and
+        # biased the gradient). Exploration comes from the entropy bonus.
+        logits   = self.actor.forward(obs)
+        probs    = softmax_2d(logits[None])[0]
+        probs    = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
+        action   = int(np.random.choice(len(probs), p=probs))
+        log_prob = float(np.log(probs[action]))
         raw_value = float(self.critic.forward(obs)[0])
         value     = self.ret_norm.denorm(raw_value)
         return action, log_prob, value
@@ -251,7 +244,7 @@ class PPOAgent:
         fracs    = [r['frac'] if isinstance(r, dict) else float(r)
                     for r in (rays or [])]
         min_f    = min(fracs) if fracs else 1.0
-        sn       = abs(speed) / self.max_speed
+        sn       = max(0.0, speed) / self.max_speed   # reverse earns nothing
         wall_pen = max(0.0, (0.25 - min_f) * 10.0) if min_f < 0.25 else 0.0
 
         steer_bon = 0.0
@@ -356,7 +349,8 @@ class PPOAgent:
                 d_ent  = probs * (np.log(probs+1e-8) + 1.0)
                 d_ent -= d_ent.sum(1, keepdims=True) * probs
                 d_ent /= N
-                d_logits -= self.entropy_coef * d_ent   # -coef because we maximize
+                # d_ent is -dH/dz, and loss = pg - coef*H  =>  dL/dz = pg + coef*d_ent
+                d_logits += self.entropy_coef * d_ent
 
                 aloss  = float(-(np.minimum(surr1, surr2).mean()) - self.entropy_coef * ent.mean())
                 ag = clip_grads(self.actor.backward_batch(d_logits), ACTOR_CLIP)
