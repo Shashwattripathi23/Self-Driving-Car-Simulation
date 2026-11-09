@@ -1,19 +1,18 @@
 """
-dashboard.py  –  PPO Training Dashboard  (v2)
-══════════════════════════════════════════════
-Launched by map_reader.py as a subprocess when AI TRAIN is clicked.
-Reads training_state.json written by PPOTrainer every frame and
-renders live charts + stats in a Tkinter window.
+dashboard.py  –  ppo training dashboard  (v2)
+launched by map_reader.py as a subprocess when ai train is clicked.
+reads training_state.json written by PPOTrainer every frame and
+renders live charts + stats in a tkinter window.
 
-Fixes over v1:
-  • Rewards update every poll tick (500 ms) — not just when history changes
-  • Chart redraws on EVERY poll, not only when history list changes
-  • Save writes full model weights + Adam moment state so training resumes
-  • Entropy coefficient shown and tracked
-  • Rolling average overlay on the reward chart
-  • Cleaner error handling so a bad state file never crashes the dashboard
+fixes over v1:
+  • rewards update every poll tick (500 ms) — not just when history changes
+  • chart redraws on every poll, not only when history list changes
+  • save writes full model weights + adam moment state so training resumes
+  • entropy coefficient shown and tracked
+  • rolling average overlay on the reward chart
+  • cleaner error handling so a bad state file never crashes the dashboard
 
-Usage:
+usage:
     python dashboard.py --state <path_to_training_state.json> --models <models_dir>
 """
 
@@ -34,7 +33,7 @@ try:
 except ImportError:
     HAS_MPL = False
 
-# ── CLI args ───────────────────────────────────────────────────
+## cli args
 STATE_PATH = None
 MODELS_DIR = None
 for i, arg in enumerate(sys.argv):
@@ -51,7 +50,7 @@ if MODELS_DIR is None:
 
 MANIFEST_PATH = os.path.join(MODELS_DIR, "manifest.json")
 
-# ── Palette ────────────────────────────────────────────────────
+## palette
 BG_DARK  = "#0d0d16"
 BG_PANEL = "#14141f"
 BG_CARD  = "#1a1a2e"
@@ -70,12 +69,10 @@ POLL_MS      = 500    # refresh interval in ms
 ROLLING_WIN  = 10     # episodes for rolling average
 
 
-# ══════════════════════════════════════════════════════════════
-#  File helpers
-# ══════════════════════════════════════════════════════════════
+## file helpers
 
 def _load_state() -> dict:
-    """Read training_state.json; return {} on any error."""
+    """read training_state.json; return {} on any error."""
     try:
         with open(STATE_PATH, encoding="utf-8") as f:
             raw = f.read().strip()
@@ -96,8 +93,8 @@ def _load_manifest() -> list:
 
 def _write_state_patch(patch: dict):
     """
-    Merge `patch` into the existing state file atomically.
-    Used to inject a save_request without losing other fields.
+    merge `patch` into the existing state file atomically.
+    used to inject a save_request without losing other fields.
     """
     try:
         try:
@@ -116,7 +113,7 @@ def _write_state_patch(patch: dict):
 
 
 def _rolling_avg(values: list, window: int) -> list:
-    """Simple rolling average; returns same-length list."""
+    """simple rolling average; returns same-length list."""
     if not values:
         return []
     out = []
@@ -126,10 +123,9 @@ def _rolling_avg(values: list, window: int) -> list:
     return out
 
 
-# ══════════════════════════════════════════════════════════════
-#  Dashboard
-# ══════════════════════════════════════════════════════════════
+## dashboard
 
+# live training window: stat cards + reward chart, refreshed every 500 ms
 class Dashboard(tk.Tk):
 
     def __init__(self):
@@ -148,12 +144,10 @@ class Dashboard(tk.Tk):
         self._build_ui()
         self._poll()                        # start polling loop
 
-    # ══════════════════════════════════════════════════════════
-    #  UI construction
-    # ══════════════════════════════════════════════════════════
+    ## ui construction
 
     def _build_ui(self):
-        # ── top bar ──
+        ## top bar
         top = tk.Frame(self, bg=BG_DARK)
         top.pack(fill=tk.X, padx=16, pady=(10, 0))
 
@@ -169,7 +163,7 @@ class Dashboard(tk.Tk):
 
         tk.Frame(self, bg=BORDER, height=1).pack(fill=tk.X, padx=12, pady=6)
 
-        # ── body: left panel | right chart ──
+        ## body: left panel | right chart
         body = tk.Frame(self, bg=BG_DARK)
         body.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
 
@@ -184,7 +178,7 @@ class Dashboard(tk.Tk):
         self._build_chart_panel(right)
         self._build_bottom_bar()
 
-    # ── stat card factory ──────────────────────────────────────
+    ## stat card factory
     def _make_card(self, parent, title: str, key: str,
                    color: str = TEXT, unit: str = ""):
         frame = tk.Frame(parent, bg=BG_CARD,
@@ -223,7 +217,7 @@ class Dashboard(tk.Tk):
 
         tk.Frame(parent, bg=BORDER, height=1).pack(fill=tk.X, pady=10)
 
-        # ── checkpoint section ──
+        ## checkpoint section
         tk.Label(parent, text="CHECKPOINT",
                  font=("Consolas", 9, "bold"),
                  bg=BG_DARK, fg=HINT).pack(anchor="w")
@@ -307,10 +301,9 @@ class Dashboard(tk.Tk):
                  font=("Consolas", 7), bg=BG_PANEL, fg="#3c3c50",
                  anchor="e").pack(side=tk.RIGHT, padx=10, pady=5)
 
-    # ══════════════════════════════════════════════════════════
-    #  Poll loop  — runs every POLL_MS ms
-    # ══════════════════════════════════════════════════════════
+    ## poll loop  — runs every POLL_MS ms
 
+    # read the shared json file, refresh the ui, then schedule the next poll
     def _poll(self):
         state = _load_state()
         if state:
@@ -320,16 +313,14 @@ class Dashboard(tk.Tk):
             self._status_lbl.config(fg=RED)
         self.after(POLL_MS, self._poll)
 
-    # ══════════════════════════════════════════════════════════
-    #  Refresh UI from state dict
-    # ══════════════════════════════════════════════════════════
+    ## refresh ui from state dict
 
     def _refresh(self, state: dict):
         running = state.get("running", False)
         self._status_var.set("● TRAINING" if running else "● STOPPED")
         self._status_lbl.config(fg=GREEN if running else RED)
 
-        # ── stat cards — always update every tick ──
+        ## stat cards — always update every tick
         ep        = state.get("episode",      0)
         ep_rew    = state.get("ep_reward",    0.0)
         best_rew  = state.get("best_reward",  0.0)
@@ -358,11 +349,11 @@ class Dashboard(tk.Tk):
             self._flash("episode")
         self._prev_ep = ep
 
-        # ── reward history chart — redraw every tick ──
+        ## reward history chart — redraw every tick
         hist = state.get("reward_history", [])
         self._redraw_chart(hist)
 
-        # ── version manifest ──
+        ## version manifest
         manifest = _load_manifest()
         if manifest:
             recent = sorted(manifest, key=lambda x: x["timestamp"])[-4:]
@@ -375,18 +366,17 @@ class Dashboard(tk.Tk):
         else:
             self._ver_var.set("No saved versions yet.")
 
-        # ── bottom log line ──
+        ## bottom log line
         self._log_var.set(
             f"Ep {ep}  |  reward={ep_rew:.2f}  |  "
             f"best={best_rew:.2f}  |  steps={steps:,}"
         )
 
-    # ══════════════════════════════════════════════════════════
-    #  Chart drawing
-    # ══════════════════════════════════════════════════════════
+    ## chart drawing
 
+    # reward per episode + a 10-episode rolling average
     def _redraw_chart(self, hist: list):
-        """Redraw both the raw and rolling-average reward lines."""
+        """redraw both the raw and rolling-average reward lines."""
         if not HAS_MPL or not hist:
             if HAS_MPL and not hist:
                 self._chart_info.set("No episodes yet…")
@@ -424,15 +414,13 @@ class Dashboard(tk.Tk):
             f"max: {max(hist):.2f}"
         )
 
-        # draw — use draw_idle so Tk event loop isn't blocked
+        # draw — use draw_idle so tk event loop isn't blocked
         self._canvas.draw_idle()
 
-    # ══════════════════════════════════════════════════════════
-    #  Visual helpers
-    # ══════════════════════════════════════════════════════════
+    ## visual helpers
 
     def _flash(self, key: str):
-        """Briefly highlight a stat card to signal a change."""
+        """briefly highlight a stat card to signal a change."""
         lbl = self._stat_colors.get(key)
         if lbl is None:
             return
@@ -440,15 +428,14 @@ class Dashboard(tk.Tk):
         lbl.config(fg=WHITE)
         self.after(300, lambda: lbl.config(fg=orig))
 
-    # ══════════════════════════════════════════════════════════
-    #  Save checkpoint
-    # ══════════════════════════════════════════════════════════
+    ## save checkpoint
 
+    # save button: writes a save_request into the json; map_reader does the actual save
     def _on_save(self):
         """
-        Ask for a label, then inject a save_request into the state file.
+        ask for a label, then inject a save_request into the state file.
         PPOTrainer reads this flag each frame and calls agent.save_version().
-        The saved JSON now includes full weight arrays AND Adam moment
+        the saved json now includes full weight arrays and adam moment
         states, so training can resume exactly where it left off.
         """
         label = simpledialog.askstring(
@@ -462,7 +449,7 @@ class Dashboard(tk.Tk):
 
         label = label.strip() or time.strftime("%Y%m%d_%H%M%S")
 
-        # Validate label (no path separators or quotes)
+        # validate label (no path separators or quotes)
         bad = set('/\\"\'')
         if any(c in bad for c in label):
             messagebox.showerror(
@@ -489,9 +476,7 @@ class Dashboard(tk.Tk):
             )
 
 
-# ══════════════════════════════════════════════════════════════
-#  Entry
-# ══════════════════════════════════════════════════════════════
+## entry
 
 if __name__ == "__main__":
     app = Dashboard()

@@ -5,7 +5,7 @@ import json
 import tkinter as tk
 from tkinter import filedialog
 
-# ── Window config ──────────────────────────────────────────────
+## window config
 WIN_W, WIN_H   = 960, 650
 SIDEBAR_W      = 220
 CANVAS_W       = WIN_W - SIDEBAR_W   # 740
@@ -16,7 +16,7 @@ MIN_LOOP_LEN   = 250                 # px: shortest stroke that can count as a l
 RESAMPLE_STEP  = 6.0                 # px between points of the final smooth centre line
 SMOOTH_PX      = 18.0                # px: size of the hand-jitter that gets smoothed away (shape is kept)
 
-# ── Colours ────────────────────────────────────────────────────
+## colours
 BG          = (18,  18,  24)
 ROAD_SURF   = (45,  45,  55)
 EDGE_COL    = (220, 220, 220)
@@ -34,10 +34,11 @@ SAVE_OK_COL = (80,  200, 120)
 SAVE_ERR_COL= (220,  80,  80)
 
 
-# ── Geometry helpers ───────────────────────────────────────────
+## geometry helpers
 
+# smoothing step 1: points evenly spaced along the loop
 def resample_closed(pts, step):
-    """Resample a closed loop at (nearly) uniform arc length."""
+    """resample a closed loop at (nearly) uniform arc length."""
     P = np.asarray(pts, dtype=float)
     Q = np.vstack([P, P[:1]])
     seg = np.hypot(np.diff(Q[:, 0]), np.diff(Q[:, 1]))
@@ -46,8 +47,9 @@ def resample_closed(pts, step):
     t = np.linspace(0.0, s[-1], n, endpoint=False)
     return np.stack([np.interp(t, s, Q[:, 0]), np.interp(t, s, Q[:, 1])], axis=1)
 
+# smoothing step 2: gaussian blur along the loop to remove hand jitter
 def smooth_closed(P, sigma):
-    """Circular Gaussian smoothing (sigma in samples). Wraps around the seam, so the
+    """circular gaussian smoothing (sigma in samples). wraps around the seam, so the
     start/finish joint gets blended like any other part of the loop."""
     n = len(P)
     r = int(3 * sigma) + 1
@@ -56,15 +58,17 @@ def smooth_closed(P, sigma):
     idx = (np.arange(n)[:, None] + k[None, :]) % n
     return (P[idx] * w[None, :, None]).sum(axis=1)
 
+# radius of the circle through 3 nearby points; small radius = sharp bend
 def radius_closed(P, k=3):
-    """Radius of curvature at every sample of a closed, evenly sampled loop."""
+    """radius of curvature at every sample of a closed, evenly sampled loop."""
     a, b, c = np.roll(P, k, axis=0), P, np.roll(P, -k, axis=0)
     cross = np.abs((b - a)[:, 0] * (c - a)[:, 1] - (b - a)[:, 1] * (c - a)[:, 0])
     lens = (np.hypot(*(b - a).T) * np.hypot(*(c - b).T) * np.hypot(*(c - a).T))
     return lens / (2.0 * np.maximum(cross, 1e-9))
 
+# full pipeline: resample -> blur -> relax bends too sharp for a 60 px road -> resample
 def smooth_road(raw, half_w):
-    """Raw hand-drawn loop -> smooth, evenly sampled closed centre line with the same overall shape.
+    """raw hand-drawn loop -> smooth, evenly sampled closed centre line with the same overall shape.
     1) resample evenly and low-pass away the hand jitter (periodic, so the seam is blended too);
     2) relax only the bends that are too tight for the road width, where the inner edge would
        fold into sharp shards; 3) resample again so the edges come out evenly spaced."""
@@ -78,6 +82,7 @@ def smooth_road(raw, half_w):
         P = P + mask[:, None] * (smooth_closed(P, 2.0) - P)      # soft, local: shape elsewhere untouched
     return resample_closed(P, RESAMPLE_STEP)
 
+# left / right edges = centre line shifted 30 px along the normal (perpendicular)
 def build_edges(P, half_w):
     """Left/right road edges of a closed centre line (offset along the local normal)."""
     d = np.roll(P, -1, axis=0) - np.roll(P, 1, axis=0)
@@ -88,7 +93,7 @@ def build_edges(P, half_w):
     return left, right
 
 def draw_dashed_line(surf, color, pts, dash=14, gap=8, width=2):
-    """Draw a polyline as a dashed line."""
+    """draw a polyline as a dashed line."""
     if len(pts) < 2:
         return
     accumulated = 0.0
@@ -120,8 +125,9 @@ def draw_dashed_line(surf, color, pts, dash=14, gap=8, width=2):
                 drawing = not drawing
 
 
-# ── Road class ─────────────────────────────────────────────────
+## road class
 
+# the track being drawn: raw mouse points -> smooth centre line + two edges
 class Road:
     def __init__(self):
         self.reset()
@@ -140,9 +146,10 @@ class Road:
             return
         self.raw_pts.append(pt)
 
+    # does the stroke come back near its start? returns where the loop closes, or none
     def closure_index(self):
-        """Index of the stroke point where the loop closes (None if the stroke does not
-        come back to its start).  Looking at the tail lets an overshoot past the start
+        """index of the stroke point where the loop closes (None if the stroke does not
+        come back to its start).  looking at the tail lets an overshoot past the start
         count as closed too; the overshoot is trimmed off when the road is built."""
         n = len(self.raw_pts)
         if n < MIN_POINTS:
@@ -174,13 +181,13 @@ class Road:
         return False
 
     def draw(self, surf):
-        # ── road surface (filled polygon between edges) ──
+        ## road surface (filled polygon between edges)
         if len(self.left) >= 2 and len(self.right) >= 2:
             poly = self.left + list(reversed(self.right))
             poly_int = [(int(x), int(y)) for x, y in poly]
             pygame.draw.polygon(surf, ROAD_SURF, poly_int)
 
-        # ── edges ──
+        ## edges
         if len(self.left) >= 2:
             pygame.draw.lines(surf, EDGE_COL, False,
                               [(int(x), int(y)) for x, y in self.left], 2)
@@ -188,13 +195,13 @@ class Road:
             pygame.draw.lines(surf, EDGE_COL, False,
                               [(int(x), int(y)) for x, y in self.right], 2)
 
-        # ── dashed centerline ──
+        ## dashed centerline
         if len(self.center) >= 2:
             draw_dashed_line(surf, CENTER_COL, self.center)
 
     def draw_preview(self, surf):
-        """While drawing: only the raw stroke and a start ring (no road yet).
-        The ring turns green once releasing the mouse would close the loop."""
+        """while drawing: only the raw stroke and a start ring (no road yet).
+        the ring turns green once releasing the mouse would close the loop."""
         if len(self.raw_pts) >= 2:
             pygame.draw.lines(surf, RAW_COL, False,
                               [(int(x), int(y)) for x, y in self.raw_pts], 2)
@@ -205,10 +212,11 @@ class Road:
             pygame.draw.circle(surf, col, (int(x0), int(y0)), 4)
 
 
-# ── Save / Load helpers ────────────────────────────────────────
+## save / load helpers
 
+# save the track as json: centre, left, right, lane width, raw stroke
 def save_map(road):
-    """Serialize the finalized road to a JSON file via save dialog."""
+    """serialize the finalized road to a json file via save dialog."""
     if not road.finalized:
         return False, "not finalized"
 
@@ -224,7 +232,7 @@ def save_map(road):
     }
 
     root = tk.Tk()
-    root.withdraw()          # hide the tiny Tk window
+    root.withdraw()          # hide the tiny tk window
     root.attributes("-topmost", True)
     filepath = filedialog.asksaveasfilename(
         title="Save Map",
@@ -241,9 +249,9 @@ def save_map(road):
     return True, filepath
 
 
-# ── Sidebar ────────────────────────────────────────────────────
+## sidebar
 
-# Button rect (relative to screen, not canvas)
+# button rect (relative to screen, not canvas)
 SAVE_BTN = pygame.Rect(CANVAS_W + 14, 310, SIDEBAR_W - 28, 34)
 
 def draw_sidebar(surf, font, small_font, road, state_msg, save_status=""):
@@ -276,7 +284,7 @@ def draw_sidebar(surf, font, small_font, road, state_msg, save_status=""):
         surf.blit(v,   (x0 + 14, y + 16))
         y += 44
 
-    # ── Save Map button ──────────────────────────────────────────
+    ## save map button
     mx, my = pygame.mouse.get_pos()
     hovering = SAVE_BTN.collidepoint(mx, my)
     can_save = road.finalized
@@ -327,8 +335,9 @@ def draw_sidebar(surf, font, small_font, road, state_msg, save_status=""):
     surf.blit(ph, (x0 + 14, WIN_H - 24))
 
 
-# ── Main loop ──────────────────────────────────────────────────
+## main loop
 
+# track editor: hold the mouse to draw, release near the start to close the loop, s to save
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -378,7 +387,7 @@ def main():
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     mx, my = event.pos
-                    # ── Save button click ──
+                    ## save button click
                     if SAVE_BTN.collidepoint(mx, my):
                         ok, msg = save_map(road)
                         if ok:
@@ -410,13 +419,13 @@ def main():
                     if mx < CANVAS_W:
                         road.add_point((mx, my))
 
-        # ── timer tick ──
+        ## timer tick
         if save_status_timer > 0:
             save_status_timer -= 1
         else:
             save_status = ""
 
-        # ── render ──
+        ## render
         canvas.fill(BG)
 
         if road.finalized:

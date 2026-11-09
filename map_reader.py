@@ -1,27 +1,23 @@
 """
-map_reader.py  –  Autonomous Car Simulator  |  Map Viewer
-══════════════════════════════════════════════════════════
-Opens a .json map file produced by environment.py and
+map_reader.py  –  autonomous car simulator  |  map viewer
+opens a .json map file produced by environment.py and
 renders the road exactly as it was drawn.
 
-Normal usage
-────────────
+normal usage
   python map_reader.py [map.json]
 
-Headless training (no window, full CPU speed)
-────────────────────────────────────────────
+headless training (no window, full cpu speed)
   python map_reader.py --headless map.json
 
-Controls  (visual mode only)
-─────────────────────────────
-  O / Ctrl+O   open another map file
-  R            reset / clear current map  (or reset car if active)
-  ESC          quit
-  ── When car is active ──
-  W            throttle
-  S            reverse
-  A / D        steer left / right
-  SPACE        brake
+controls  (visual mode only)
+  o / ctrl+o   open another map file
+  r            reset / clear current map  (or reset car if active)
+  esc          quit
+  when car is active:
+  w            throttle
+  s            reverse
+  a / d        steer left / right
+  space        brake
 """
 
 import pygame
@@ -35,15 +31,16 @@ import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-# ── Headless flag ──────────────────────────────────────────────
-# --headless   : skip all rendering, run at full CPU speed
+## headless flag
+# --headless   : skip all rendering, run at full cpu speed
+# --headless: no window, fixed time step, runs as fast as the cpu allows
 HEADLESS = "--headless" in sys.argv
 # --checkpoint <file>  : resume from a saved .npz checkpoint (headless only)
 _CHECKPOINT_ARG = None
 if HEADLESS:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-    # Parse --checkpoint <value> and remove both from argv
+    # parse --checkpoint <value> and remove both from argv
     _clean = []
     _i = 0
     while _i < len(sys.argv):
@@ -57,7 +54,7 @@ if HEADLESS:
             _i += 1
     sys.argv = _clean
 
-# ── PPO model (optional – graceful fallback if numpy missing) ──
+## ppo model (optional – graceful fallback if numpy missing)
 try:
     from model import PPOAgent, PPOTrainer, get_latest_model_path, MODELS_DIR
     HAS_MODEL = True
@@ -65,12 +62,12 @@ except ImportError:
     HAS_MODEL = False
     MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
-# ── Window config ──────────────────────────────────────────────
+## window config
 WIN_W, WIN_H  = 960, 650
 SIDEBAR_W     = 220
 CANVAS_W      = WIN_W - SIDEBAR_W
 
-# ── Colours ────────────────────────────────────────────────────
+## colours
 BG           = (18,  18,  24)
 ROAD_SURF    = (45,  45,  55)
 EDGE_COL     = (220, 220, 220)
@@ -92,31 +89,33 @@ AI_BTN_COL   = ( 30, 160, 120)
 AI_BTN_HOV   = ( 50, 200, 150)
 AI_BTN_ACT   = (220, 160,  30)
 
-# ── Car physics constants ──────────────────────────────────────
+## car physics constants
 FPS          = 60
 CAR_SCALE    = 1.0
 WHEELBASE    = 28.0
 MAX_SPEED    = 180.0
-AI_MAX_SPEED = 240.0   # AI cap: braking distance (~100px) fits inside ray range (220px)
+AI_MAX_SPEED = 240.0   # ai cap: braking distance (~100px) fits inside ray range (220px)
 MAX_STEER    = math.radians(28)
 STEER_RATE   = math.radians(90)
 STEER_RTN    = math.radians(150)
 ACCEL        = 110.0
-AI_ACCEL     = 280.0   # stronger acceleration in AI mode
+AI_ACCEL     = 280.0   # stronger acceleration in ai mode
 BRAKE_F      = 280.0
 DRAG_K       = 1.6
-AI_SUBSTEPS  = 6       # physics steps per render frame in AI mode
-# Hard-coded counter-steer near walls.  Left OFF: a scripted perfect driver crashes
+# 6 physics steps per decision: decisions at 60 hz, physics at 360 hz
+AI_SUBSTEPS  = 6       # physics steps per render frame in ai mode
+# hard-coded counter-steer near walls.  left off: a scripted perfect driver crashes
 # 100% of the time with it on at >=160 px/s, and it corrupts the policy's training data.
 SAFETY_OVERRIDE = False
 
-# Car drawing size (half-lengths in px)
+# car drawing size (half-lengths in px)
 CAR_FL, CAR_RL, CAR_HW = 12, 9, 5   # front-len, rear-len, half-width
 
-# ── Road-boundary helper ───────────────────────────────────────
+## road-boundary helper
 
+# shortest distance from a point to a line segment (project onto it, then clamp)
 def point_segment_dist(px, py, ax, ay, bx, by):
-    """Closest distance from point P to segment AB, and the foot point."""
+    """closest distance from point p to segment ab, and the foot point."""
     dx, dy = bx - ax, by - ay
     if dx == 0 and dy == 0:
         return math.hypot(px - ax, py - ay), (ax, ay)
@@ -126,7 +125,7 @@ def point_segment_dist(px, py, ax, ay, bx, by):
 
 
 def closest_point_on_polyline(px, py, pts):
-    """Return (min_dist, foot_x, foot_y) from point to polyline."""
+    """return (min_dist, foot_x, foot_y) from point to polyline."""
     best = (1e18, px, py)
     for i in range(len(pts) - 1):
         d, (fx, fy) = point_segment_dist(px, py, *pts[i], *pts[i+1])
@@ -135,8 +134,10 @@ def closest_point_on_polyline(px, py, pts):
     return best
 
 
+# if the car centre is within 6 px of an edge, push it back and slow it down
+# the main loop treats being pushed back as a crash
 def enforce_road_boundary(car, left_pts, right_pts, margin=6):
-    """Push the car back if it has crossed either road edge."""
+    """push the car back if it has crossed either road edge."""
     if not left_pts or not right_pts:
         return
 
@@ -156,16 +157,19 @@ def enforce_road_boundary(car, left_pts, right_pts, margin=6):
             car.speed *= 0.3
 
 
-# ── Ray-casting ────────────────────────────────────────────────
+## ray-casting
 
+# sensors: 10 rays in front (160 degrees) + 10 behind, each up to 220 px long
 RAY_MAX_DIST  = 220    # px  – maximum ray length on the map canvas
 RAY_N         = 10     # rays per side
 RAY_FOV_FRONT = 160    # total front arc degrees
 RAY_FOV_BACK  = 160    # total rear  arc degrees
 
 
+# where does the ray o + t*d hit segment a-b? solved with 2d cross products
+# it is a hit if t >= 0 (in front of the car) and 0 <= u <= 1 (inside the segment)
 def _ray_seg_intersect(ox, oy, dx, dy, ax, ay, bx, by):
-    """Return t >= 0 if ray (O+t*D) hits segment AB, else None."""
+    """return t >= 0 if ray (O+t*D) hits segment ab, else None."""
     ex, ey = bx - ax, by - ay
     denom  = dx * ey - dy * ex
     if abs(denom) < 1e-10:
@@ -177,9 +181,11 @@ def _ray_seg_intersect(ox, oy, dx, dy, ax, ay, bx, by):
     return None
 
 
+# test one ray against every edge segment and keep the closest hit
+# frac = distance / 220, so 0 = touching a wall, 1 = nothing in range
 def _cast_single_ray(ox, oy, angle, left_pts, right_pts,
                      max_dist=RAY_MAX_DIST):
-    """Cast one ray; return (dist, end_x, end_y, frac)."""
+    """cast one ray; return (dist, end_x, end_y, frac)."""
     dx, dy   = math.cos(angle), math.sin(angle)
     best_t   = max_dist
     for pts in (left_pts, right_pts):
@@ -195,23 +201,24 @@ def _cast_single_ray(ox, oy, angle, left_pts, right_pts,
     return best_t, ex, ey, frac
 
 
+# the car's 20 distance sensors, angles measured from its heading
 def compute_rays(car, left_pts, right_pts):
     """
-    Return list of ray dicts.  First RAY_N are front, last RAY_N are rear.
-    Each dict: rel_angle, dist, end_x, end_y, frac
+    return list of ray dicts.  first RAY_N are front, last RAY_N are rear.
+    each dict: rel_angle, dist, end_x, end_y, frac
     """
     if not left_pts or not right_pts:
         return []
     rays = []
     h    = car.heading
-    # Front: spread evenly over front arc, centred on heading
+    # front: spread evenly over front arc, centred on heading
     for i in range(RAY_N):
         off  = math.radians(-RAY_FOV_FRONT/2 + i * RAY_FOV_FRONT / (RAY_N - 1))
         dist, ex, ey, frac = _cast_single_ray(
             car.x, car.y, h + off, left_pts, right_pts)
         rays.append(dict(rel_angle=off, dist=dist,
                          end_x=ex, end_y=ey, frac=frac))
-    # Rear: spread over rear arc (centred on heading+180°)
+    # rear: spread over rear arc (centred on heading+180°)
     for i in range(RAY_N):
         off  = math.radians(180 - RAY_FOV_BACK/2 + i * RAY_FOV_BACK / (RAY_N - 1))
         dist, ex, ey, frac = _cast_single_ray(
@@ -236,7 +243,7 @@ def _ray_color(frac):
 
 
 def draw_rays_map(surf, car, rays):
-    """Draw rays on the map canvas (world-space coords)."""
+    """draw rays on the map canvas (world-space coords)."""
     cx, cy = int(car.x), int(car.y)
     for ray in rays:
         col = _ray_color(ray['frac'])
@@ -246,8 +253,10 @@ def draw_rays_map(surf, car, rays):
         pygame.draw.circle(surf, col, (ex, ey), 2)
 
 
-# ── Car class (self-contained, scaled for the map canvas) ─────
+## car class (self-contained, scaled for the map canvas)
 
+# the car the agent drives: simple top-down physics
+# dirn = +1 when driving the way the track was drawn, -1 when driving the other way
 class MapCar:
     def __init__(self, x, y, heading=0.0, dirn=1):
         self.dirn    = dirn          # +1 = driving along the drawn direction of the road, -1 = against it
@@ -265,6 +274,7 @@ class MapCar:
         ms = AI_MAX_SPEED if ai_mode else MAX_SPEED
         ac = AI_ACCEL    if ai_mode else ACCEL
 
+        # steering: the wheels turn gradually towards the target angle, slower when the car is slow
         speed_factor = min(1.0, abs(self.speed) / 20.0)
         target = steer_dir * MAX_STEER
         diff   = target - self.steer
@@ -289,9 +299,11 @@ class MapCar:
             elif self.speed < 0:
                 self.speed = min(0, self.speed + total_drag)
 
+        # clamp the speed: max 240 forward, 35% of that in reverse
         self.speed = max(-ms * 0.35, min(ms, self.speed))
 
         if abs(self.speed) > 0.1 and abs(self.steer) > 0.0005:
+            # kinematic bicycle model: turn radius r = wheelbase / tan(steer), turn rate = speed / r
             R = WHEELBASE / math.tan(self.steer)
             self.heading += (self.speed / R) * dt
 
@@ -364,20 +376,21 @@ class MapCar:
                              (cx, cy), (int(ax), int(ay)), 1)
 
 
-# ── Shared-state helpers (car.py subprocess) ──────────────────
+## shared-state helpers (car.py subprocess)
 
 _car_proc        = None
 _shared_state_path = None
 
 
+# opens car.py in a separate window; it reads the car state from a temp json file
 def _launch_car_gui():
-    """Start car.py as a subprocess in shared-display mode."""
+    """start car.py as a subprocess in shared-display mode."""
     global _car_proc, _shared_state_path
     if _car_proc and _car_proc.poll() is None:
         _car_proc.terminate()
     fd, _shared_state_path = tempfile.mkstemp(suffix=".json", prefix="car_state_")
     os.close(fd)
-    # Write a placeholder so car.py can open the file immediately
+    # write a placeholder so car.py can open the file immediately
     with open(_shared_state_path, "w") as f:
         json.dump({"heading": 0.0, "speed": 0.0, "steer": 0.0,
                    "thr": 0.0, "brake": False}, f)
@@ -387,7 +400,7 @@ def _launch_car_gui():
 
 
 def _write_shared_state(car, rays=None):
-    """Dump current car physics state + ray data to the shared temp file."""
+    """dump current car physics state + ray data to the shared temp file."""
     if _shared_state_path is None:
         return
     try:
@@ -416,7 +429,7 @@ def _kill_car_gui():
     _car_proc = None
 
 
-# ── Drawing helpers ────────────────────────────────────────────
+## drawing helpers
 
 def draw_dashed_line(surf, color, pts, dash=14, gap=8, width=2):
     if len(pts) < 2:
@@ -475,7 +488,7 @@ def draw_road(surf, data):
         draw_dashed_line(surf, CENTER_COL, center)
 
 
-# ── File dialog helpers ────────────────────────────────────────
+## file dialog helpers
 
 def open_file_dialog():
     root = tk.Tk()
@@ -506,8 +519,9 @@ def load_map(filepath):
         return None, f"File error: {e}"
 
 
+# place a car at a random point on the centre line, facing along the road
 def spawn_car_on_road(map_data, reverse=False):
-    """Pick a random center-line segment, spawn car there, heading along the road
+    """pick a random center-line segment, spawn car there, heading along the road
     (or against the drawn direction when reverse=True)."""
     center = [tuple(p) for p in map_data.get("center", [])]
     if len(center) < 2:
@@ -525,17 +539,21 @@ def spawn_car_on_road(map_data, reverse=False):
     return MapCar(sx, sy, heading)
 
 
+# new training episode: random spot, random direction (50/50), starting at 25% speed
 def random_ai_car(map_data):
-    """Fresh training episode: random spot on the road, random direction, 25% of top speed."""
+    """fresh training episode: random spot on the road, random direction, 25% of top speed."""
     c = spawn_car_on_road(map_data, reverse=random.random() < 0.5)
     if c:
         c.speed = AI_MAX_SPEED * 0.25
     return c
 
 
+# reward-only signals (the policy never sees these):
+#   lat = distance to the centre line / half lane width
+#   fwd = cos(angle between car heading and road direction) = dot product of two unit vectors
 def track_state(car, center_pts, half_w):
     """(lateral offset / half lane width, cos of heading vs road direction) for the reward.
-    Uses the true centre line - training signal only, never an input to the policy."""
+    uses the true centre line - training signal only, never an input to the policy."""
     best_d, best_i = 1e18, 0
     for i in range(len(center_pts) - 1):
         d, _ = point_segment_dist(car.x, car.y, *center_pts[i], *center_pts[i + 1])
@@ -547,23 +565,25 @@ def track_state(car, center_pts, half_w):
     return best_d / half_w, fwd
 
 
-# ── Sidebar button rects (updated each frame) ──────────────────
+## sidebar button rects (updated each frame)
 OPEN_BTN = pygame.Rect(0, 0, 1, 1)
 CAR_BTN  = pygame.Rect(0, 0, 1, 1)
 AI_BTN   = pygame.Rect(0, 0, 1, 1)
 
-# ── Training state globals ───────────────────────────────────
+## training state globals
 _trainer           = None      # PPOTrainer instance
-_ai_active         = False     # True while AI is driving
+_ai_active         = False     # true while ai is driving
 _dashboard_proc    = None      # dashboard.py subprocess
-_training_state_path = None    # shared JSON for dashboard
+_training_state_path = None    # shared json for dashboard
 
-# ── Periodic checkpoint saving ──────────────────────────────
+## periodic checkpoint saving
+# auto-save a checkpoint every 150 episodes
 SAVE_EVERY_EPISODES = 150   # rotate spawn point & auto-save checkpoint this often
 _last_save_episode   = 0
-_ai_spawn          = None      # fixed (x, y, heading) used for AI episode resets
+_ai_spawn          = None      # fixed (x, y, heading) used for ai episode resets
 
-# ── Stall detection (ends episode if car barely moves for N seconds) ──
+## stall detection (ends episode if car barely moves for n seconds)
+# stall rule: moving less than 4 px in 5 s counts as a crash (stops the car learning to sit still)
 STALL_TIMEOUT  = 5.0    # seconds of (near-)no net movement before ending the episode
 STALL_DIST_EPS = 4.0    # px — net movement below this doesn't reset the stall timer
 _stall_x       = None
@@ -571,10 +591,11 @@ _stall_y       = None
 _stall_timer   = 0.0
 
 
+# popup to pick a saved checkpoint or start a fresh model
 def _ask_model_version():
     """
-    Tkinter dialog: pick any saved checkpoint from the full manifest,
-    or start a Fresh Model.  Returns a PPOAgent or None (cancel).
+    tkinter dialog: pick any saved checkpoint from the full manifest,
+    or start a fresh Model.  returns a PPOAgent or none (cancel).
     """
     if not HAS_MODEL:
         messagebox.showerror("Missing dependency",
@@ -589,9 +610,9 @@ def _ask_model_version():
     root.withdraw()
     root.attributes("-topmost", True)
 
-    chosen_path = {"val": None}    # None = cancelled, "__fresh__" = new agent
+    chosen_path = {"val": None}    # none = cancelled, "__fresh__" = new agent
 
-    # ── colour palette ──
+    ## colour palette
     BG      = "#0d0d16"
     BG_CARD = "#14141f"
     BG_ROW  = "#1a1a2e"
@@ -608,7 +629,7 @@ def _ask_model_version():
     dlg.minsize(560, 340)
     dlg.grab_set()
 
-    # ── header ──
+    ## header
     tk.Label(dlg, text="SELECT CHECKPOINT",
              font=("Consolas", 12, "bold"),
              bg=BG, fg=FG_MAIN).pack(pady=(16, 2), padx=20, anchor="w")
@@ -616,7 +637,7 @@ def _ask_model_version():
              font=("Consolas", 9), bg=BG, fg=FG_HINT).pack(padx=20, anchor="w")
     tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X, padx=14, pady=8)
 
-    # ── column headers ──
+    ## column headers
     hdr = tk.Frame(dlg, bg=BG_CARD)
     hdr.pack(fill=tk.X, padx=14)
     for text, w in [("#", 3), ("Label", 22), ("Episode", 9),
@@ -625,7 +646,7 @@ def _ask_model_version():
                  bg=BG_CARD, fg=FG_HINT,
                  width=w, anchor="w").pack(side=tk.LEFT, padx=(4, 0), pady=3)
 
-    # ── listbox ──
+    ## listbox
     lb_frame = tk.Frame(dlg, bg=BG)
     lb_frame.pack(fill=tk.BOTH, expand=True, padx=14)
 
@@ -658,7 +679,7 @@ def _ask_model_version():
         lb.insert(tk.END, "   (no saved checkpoints found)")
         lb.config(state=tk.DISABLED)
 
-    # ── file path hint below list ──
+    ## file path hint below list
     info_var = tk.StringVar(
         value=f"File: {entries[0].get('file','')}" if entries else "")
     tk.Label(dlg, textvariable=info_var,
@@ -672,7 +693,7 @@ def _ask_model_version():
 
     lb.bind("<<ListboxSelect>>", on_select)
 
-    # ── buttons ──
+    ## buttons
     tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X, padx=14, pady=6)
     btn_row = tk.Frame(dlg, bg=BG)
     btn_row.pack(fill=tk.X, padx=14, pady=(0, 14))
@@ -735,7 +756,7 @@ def _ask_model_version():
 
 
 def _launch_dashboard(state_path):
-    """Start dashboard.py as a detached subprocess."""
+    """start dashboard.py as a detached subprocess."""
     global _dashboard_proc
     if _dashboard_proc and _dashboard_proc.poll() is None:
         return  # already running
@@ -762,10 +783,10 @@ def draw_sidebar(surf, font, small_font, map_data, filename,
     pygame.draw.rect(surf, SIDEBAR_BG, (x0, 0, SIDEBAR_W, WIN_H))
     pygame.draw.line(surf, (60, 60, 75), (x0, 0), (x0, WIN_H), 1)
 
-    # ── title ──
+    ## title
     surf.blit(font.render("MAP VIEWER", True, TEXT_COL), (x0 + 14, 20))
 
-    # ── map info ──
+    ## map info
     if map_data:
         tag_col, tag_text = OK_COL, "MAP LOADED"
     else:
@@ -789,7 +810,7 @@ def draw_sidebar(surf, font, small_font, map_data, filename,
         surf.blit(small_font.render(val,   True, TEXT_COL), (x0 + 14, y + 16))
         y += 42
 
-    # ── Open button ──
+    ## open button
     OPEN_BTN = pygame.Rect(x0 + 14, y + 6, SIDEBAR_W - 28, 34)
     mx, my   = pygame.mouse.get_pos()
     hov      = OPEN_BTN.collidepoint(mx, my)
@@ -798,7 +819,7 @@ def draw_sidebar(surf, font, small_font, map_data, filename,
     surf.blit(lbl, (OPEN_BTN.centerx - lbl.get_width() // 2,
                     OPEN_BTN.centery - lbl.get_height() // 2))
 
-    # ── Import Car button ──
+    ## import car button
     CAR_BTN = pygame.Rect(x0 + 14, OPEN_BTN.bottom + 10, SIDEBAR_W - 28, 34)
     if map_data:
         c_col = CAR_BTN_HOV if CAR_BTN.collidepoint(mx, my) else CAR_BTN_COL
@@ -817,7 +838,7 @@ def draw_sidebar(surf, font, small_font, map_data, filename,
         surf.blit(disabled_lbl, (CAR_BTN.centerx - disabled_lbl.get_width() // 2,
                                  CAR_BTN.centery - disabled_lbl.get_height() // 2))
 
-    # ── AI TRAIN button ──
+    ## ai train button
     AI_BTN = pygame.Rect(x0 + 14, CAR_BTN.bottom + 8, SIDEBAR_W - 28, 34)
     can_ai = car_active and HAS_MODEL
     if can_ai:
@@ -842,7 +863,7 @@ def draw_sidebar(surf, font, small_font, map_data, filename,
         sc = OK_COL if "Loaded" in status or "Spawned" in status else ERR_COL
         surf.blit(small_font.render(status, True, sc), (x0 + 14, status_y))
 
-    # ── Car telemetry (shown when car is active) ──
+    ## car telemetry (shown when car is active)
     if car_active:
         ty = status_y + 22
         surf.blit(font.render("── CAR ──", True, ACCENT_COL), (x0 + 14, ty))
@@ -871,7 +892,7 @@ def draw_sidebar(surf, font, small_font, map_data, filename,
 
 
 def draw_car_telemetry_overlay(surf, font, small_font, car):
-    """Small HUD overlay on the canvas showing car speed / steer."""
+    """small hud overlay on the canvas showing car speed / steer."""
     items = [
         f"Speed : {abs(car.speed):5.1f} px/s",
         f"Steer : {math.degrees(car.steer):+.1f}°",
@@ -889,15 +910,16 @@ def draw_car_telemetry_overlay(surf, font, small_font, car):
                   (bx + pad, by + pad + i * lh))
 
 
-# ── Main ───────────────────────────────────────────────────────
+## main
 
+# main loop: loads the map, runs the physics, calls the trainer, draws everything
 def main():
     global _trainer, _ai_active, _training_state_path, _last_save_episode, \
            _ai_spawn, _stall_x, _stall_y, _stall_timer
 
     signal_crash = False
 
-    pygame.init()   # SDL dummy driver (set above) handles headless display
+    pygame.init()   # sdl dummy driver (set above) handles headless display
     screen = pygame.display.set_mode((WIN_W, WIN_H))
     if not HEADLESS:
         pygame.display.set_caption("Autonomous Car Simulator – Map Viewer")
@@ -912,7 +934,7 @@ def main():
     filename     = ""
     status       = ""
     status_timer = 0
-    car          = None   # MapCar instance or None
+    car          = None   # MapCar instance or none
 
     def do_open_map(path):
         nonlocal map_data, filename, status, status_timer, car, left_pts, right_pts
@@ -933,7 +955,7 @@ def main():
         if map_data:
             car = spawn_car_on_road(map_data)
             if car:
-                # Lock in this position as the fixed AI respawn point for this map
+                # lock in this position as the fixed ai respawn point for this map
                 _ai_spawn = (car.x, car.y, car.heading)
                 status = "Spawned car on road!"
                 _launch_car_gui()
@@ -943,7 +965,7 @@ def main():
                 status = "No center data!"
             status_timer = 240
 
-    # ── CLI argument / immediate prompt ──
+    ## cli argument / immediate prompt
     if len(sys.argv) > 1:
         do_open_map(sys.argv[1])
     elif not HEADLESS:
@@ -954,7 +976,7 @@ def main():
         print("[headless] No map path provided.  Usage: python map_reader.py --headless map.json")
         return
 
-    # ── Headless: auto-spawn car + start AI ──
+    ## headless: auto-spawn car + start ai
     if HEADLESS:
         if map_data is None:
             print("[headless] Failed to load map.")
@@ -964,9 +986,9 @@ def main():
             print("[headless] No center-line data in map — cannot spawn car.")
             return
 
-        # ── Load or create agent ──
+        ## load or create agent
         if _CHECKPOINT_ARG is not None:
-            # Resolve path: try as-is, then inside models/
+            # resolve path: try as-is, then inside models/
             ck_path = _CHECKPOINT_ARG
             if not os.path.isabs(ck_path) and not os.path.exists(ck_path):
                 ck_path = os.path.join(MODELS_DIR, _CHECKPOINT_ARG)
@@ -977,7 +999,7 @@ def main():
             print(f"[headless] Resumed from checkpoint: {os.path.basename(ck_path)}")
             print(f"           Episode={agent.episode}  Best reward={agent.best_reward:.2f}")
         elif HAS_MODEL:
-            # No --checkpoint given — show what's available and exit
+            # no --checkpoint given — show what's available and exit
             manifest = []
             try:
                 import json as _js
@@ -1017,15 +1039,16 @@ def main():
         _ai_active = True
         _ai_spawn  = (car.x, car.y, car.heading)
         _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
-        # Only set max_speed for fresh agents — loaded checkpoints must keep
-        # whatever max_speed they were trained with.  Changing it after loading
-        # shifts the observation AND reward scale, causing the agent to regress.
+        # only set max_speed for fresh agents — loaded checkpoints must keep
+        # whatever max_speed they were trained with.  changing it after loading
+        # shifts the observation and reward scale, causing the agent to regress.
+        # fresh agents use 240 as max speed; loaded checkpoints keep their own value
         if _CHECKPOINT_ARG is None:
             _trainer.agent.max_speed = AI_MAX_SPEED
         print(f"[headless] max_speed={_trainer.agent.max_speed:.0f}  "
               f"({'loaded from checkpoint' if _CHECKPOINT_ARG else 'fresh agent'})")
-        # No dashboard in headless — it adds subprocess + JSON I/O overhead.
-        # Progress is printed to the terminal every 10 episodes instead.
+        # no dashboard in headless — it adds subprocess + json I/O overhead.
+        # progress is printed to the terminal every 10 episodes instead.
         print(f"[headless] Training started.  Map: {filename}  "
               f"Spawn: ({car.x:.0f}, {car.y:.0f})")
         print("[headless] Press Ctrl+C to stop and save.")
@@ -1037,10 +1060,11 @@ def main():
     _last_print_ep = 0   # for headless terminal progress
 
     while True:
-        # In headless mode skip the FPS cap — run at full CPU speed.
-        # Use a fixed dt so physics stays deterministic regardless of
+        # in headless mode skip the fps cap — run at full cpu speed.
+        # use a fixed dt so physics stays deterministic regardless of
         # how fast the loop actually runs.
         if HEADLESS:
+            # headless: fixed time step so the physics is deterministic
             dt = 1.0 / FPS
         else:
             dt = min(clock.tick(FPS) / 1000.0, 0.05)
@@ -1058,7 +1082,7 @@ def main():
                 thr_held = str_held = 0.0
                 brake_held = False
 
-        # In headless mode skip event polling — SDL dummy produces no events
+        # in headless mode skip event polling — sdl dummy produces no events
         # and pygame.event.get() still has overhead when called at full speed.
         if not HEADLESS:
             for event in pygame.event.get():
@@ -1112,10 +1136,10 @@ def main():
                                     _trainer = PPOTrainer(agent)
                                     _trainer.stats["running"] = True
                                     _ai_active = True
-                                    # Lock the current car position as the fixed respawn point
+                                    # lock the current car position as the fixed respawn point
                                     _ai_spawn = (car.x, car.y, car.heading)
                                     _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
-                                    # Use AI_MAX_SPEED so obs + reward are on the same scale
+                                    # use AI_MAX_SPEED so obs + reward are on the same scale
                                     _trainer.agent.max_speed = AI_MAX_SPEED
                                     _launch_dashboard(_training_state_path)
 
@@ -1123,43 +1147,47 @@ def main():
                     do_open_map(event.file)
 
 
-        # ── update car ──
+        ## update car
         rays         = []
         crashed      = False
         # signal_crash must persist across frames: a crash on the last substep
         # is delivered to the trainer on the first substep of the next frame.
         if car:
-            # Road geometry doesn't change — only rebuild when map changes.
-            # Rebuilding every frame creates thousands of list objects per second.
+            # road geometry doesn't change — only rebuild when map changes.
+            # rebuilding every frame creates thousands of list objects per second.
             if map_data and not left_pts:
                 left_pts  = [tuple(p) for p in map_data.get("left",  [])]
                 right_pts = [tuple(p) for p in map_data.get("right", [])]
                 center_pts = [tuple(p) for p in map_data.get("center", [])]
                 half_w = float(map_data.get("lane_width", 60)) / 2
 
+            # ai mode: 6 physics substeps per frame; the policy decides on the first one
             substeps = AI_SUBSTEPS if _ai_active else 1
             sub_dt   = dt / substeps
 
             for _sub in range(substeps):
-                # Recompute rays every substep so the policy sees current wall
-                # distances.  Without this, rays stays [] for the whole frame
+                # recompute rays every substep so the policy sees current wall
+                # distances.  without this, rays stays [] for the whole frame
                 # and the agent is completely blind to road geometry.
                 if map_data and left_pts and right_pts:
                     rays = compute_rays(car, left_pts, right_pts)
 
-                # Frame-skip: the policy decides once per frame (first substep),
+                # frame-skip: the policy decides once per frame (first substep),
                 # or immediately after a crash so the terminal flag is delivered.
-                # Between decisions the chosen controls are held.
+                # between decisions the chosen controls are held.
+                # decision point: first substep of the frame, or right after a crash
+                # the trainer stores the last step, maybe learns, and returns the next controls
                 if _ai_active and _trainer and (_sub == 0 or signal_crash):
                     trk = track_state(car, center_pts, half_w) if len(center_pts) > 1 else (0.0, 1.0)
                     thr_held, brake_held, str_held = _trainer.step(
                         rays, car.speed, car.steer, signal_crash, dt, track=trk,
-                        # In headless mode pass None so the trainer skips
-                        # JSON file I/O on every substep (was thousands/sec).
+                        # in headless mode pass none so the trainer skips
+                        # json file I/O on every substep (was thousands/sec).
                         training_state_path=(None if HEADLESS
                                              else _training_state_path),
                     )
                     signal_crash = False
+                    # 30 s limit reached: start a new episode at a random spot
                     if _trainer.reset_requested:       # episode hit the 30 s cap: new random start
                         new_car = random_ai_car(map_data)
                         if new_car:
@@ -1172,14 +1200,15 @@ def main():
                                 training_state_path=(None if HEADLESS
                                                      else _training_state_path))
 
-                    # ── Periodic checkpoint save + random respawn point ──
+                    ## periodic checkpoint save + random respawn point
                     ep = _trainer.agent.episode
+                    # every 150 episodes: save a checkpoint and move to a new spawn point
                     if ep > 0 and ep % SAVE_EVERY_EPISODES == 0 and ep != _last_save_episode:
                         _last_save_episode = ep
                         _trainer.agent.save_npz()
-                        # Pick a new random spawn and lock it as the fixed point.
-                        # Without updating _ai_spawn here, every crash would
-                        # still go back to the ORIGINAL spawn, defeating the
+                        # pick a new random spawn and lock it as the fixed point.
+                        # without updating _ai_spawn here, every crash would
+                        # still go back to the original spawn, defeating the
                         # purpose of rotation.
                         rotated = random_ai_car(map_data)
                         if rotated:
@@ -1187,15 +1216,17 @@ def main():
                             car = rotated
                             _stall_x, _stall_y, _stall_timer = car.x, car.y, 0.0
 
-                # ── Safety override: counter-steer when wall is critically close ──
-                # The policy sometimes commits to a turn and keeps steering even
-                # as the inside wall closes in.  If the closest front ray on the
+                ## safety override: counter-steer when wall is critically close
+                # the policy sometimes commits to a turn and keeps steering even
+                # as the inside wall closes in.  if the closest front ray on the
                 # side we're steering toward drops below the critical threshold,
                 # flip str_held to opposite so the car steers away from the wall.
-                # This is purely physics-level — the buffer still logs whatever
+                # this is purely physics-level — the buffer still logs whatever
                 # action the policy chose, so training is unaffected.
                 # (uses a per-substep copy so the held policy action isn't
                 # flipped back and forth across repeated substeps)
+                # optional safety override (switched off): it would steer away from close walls
+                # kept off because the executed action would differ from the one the policy chose
                 eff_str = str_held
                 if SAFETY_OVERRIDE and _ai_active and rays and eff_str != 0.0:
                     WALL_CRITICAL = 0.12   # frac below this = very close to wall
@@ -1210,14 +1241,16 @@ def main():
                     if side_fracs and min(side_fracs) < WALL_CRITICAL:
                         eff_str = -eff_str   # flip: counter-steer
 
+                # move the car one physics substep with the held action
                 car.update(thr_held, brake_held, eff_str, sub_dt,
                            ai_mode=_ai_active)
                 old_x, old_y = car.x, car.y
                 enforce_road_boundary(car, left_pts, right_pts, margin=6)
+                # crash = the boundary check had to push the car back
                 crashed = (car.x != old_x or car.y != old_y)
 
-                # ── Stall detection ──
-                # If the car hasn't made meaningful net progress from its
+                ## stall detection
+                # if the car hasn't made meaningful net progress from its
                 # last-checked position in STALL_TIMEOUT seconds, treat it
                 # like a crash so the episode ends (gets the same -15 via
                 # compute_reward's crashed flag) instead of idling forever
@@ -1235,9 +1268,10 @@ def main():
                                 crashed = True
                                 _stall_timer = 0.0   # reset; new position set below on respawn
 
+                # crash: respawn a new car now, the trainer gets the crash signal on the next decision
                 if crashed and _ai_active and _trainer:
                     signal_crash = True
-                    # Random spawn every episode (avoids memorising one stretch)
+                    # random spawn every episode (avoids memorising one stretch)
                     new_car = random_ai_car(map_data)
                     if new_car is None and _ai_spawn is not None:
                         new_car = MapCar(*_ai_spawn)
@@ -1248,10 +1282,11 @@ def main():
                     crashed = False
 
 
-            # ── poll save request (visual mode only) ──
-            # In headless mode there is no dashboard injecting save_request,
-            # and reading the JSON file every loop iteration at full CPU speed
+            ## poll save request (visual mode only)
+            # in headless mode there is no dashboard injecting save_request,
+            # and reading the json file every loop iteration at full cpu speed
             # is a major bottleneck (thousands of file reads per second).
+            # dashboard save button: it writes a save_request into the shared json file
             if not HEADLESS and _ai_active and _trainer and _training_state_path:
                 try:
                     with open(_training_state_path) as _sf:
@@ -1269,14 +1304,14 @@ def main():
             if not HEADLESS:
                 _write_shared_state(car, rays)
 
-        # ── status timer (visual only) ──
+        ## status timer (visual only)
         if not HEADLESS:
             if status_timer > 0:
                 status_timer -= 1
             else:
                 status = ""
 
-        # ── headless terminal progress ──
+        ## headless terminal progress
         if HEADLESS and _trainer:
             ep = _trainer.agent.episode
             if ep != _last_print_ep and ep % 10 == 0:
@@ -1290,7 +1325,7 @@ def main():
                       f"last_r={last_r:>8.2f}  best={best:>8.2f}  "
                       f"ent={coef:.4f}")
 
-        # ── render (visual mode only) ──
+        ## render (visual mode only)
         if not HEADLESS:
             canvas.fill(BG)
             draw_grid(canvas)

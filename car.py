@@ -1,21 +1,20 @@
 """
-car.py  –  F1 Top-View Car Simulator (Scaled Up)
-─────────────────────────────────────
-Left panel : top-down F1 car (steers front wheels, drives all 4)
-Right panel: per-wheel telemetry + scrolling action log
+car.py  –  f1 top-view car simulator (Scaled Up)
+left panel : top-down f1 car (steers front wheels, drives all 4)
+right panel: per-wheel telemetry + scrolling action log
 
-Controls:  W=throttle  S=reverse  SPACE=brake  A=steer-left  D=steer-right  R=reset  ESC=quit
+controls:  W=throttle  S=reverse  SPACE=brake  A=steer-left  D=steer-right  R=reset  ESC=quit
 """
 
 import pygame, math, sys, time, json
 from collections import deque
 
-# ── Window ──────────────────────────────────────────────────────────────────
+## window
 WIN_W, WIN_H = 1200, 700
 VIEW_W       = 760          # car canvas
 LOG_W        = WIN_W - VIEW_W
 
-# ── Colours ─────────────────────────────────────────────────────────────────
+## colours
 BG_VIEW   = (13,  13,  20)
 BG_LOG    = (18,  18,  28)
 SEP       = (45,  45,  60)
@@ -36,10 +35,10 @@ HALO_C    = (200, 175,  50)
 COCKPIT_C = (25,   25,  38)
 GRID_DOT  = (22,   22,  33)
 
-# ── Physics constants ────────────────────────────────────────────────────────
+## physics constants
 FPS        = 60
 
-# We scale the entire physics & rendering by 4.5x so it takes up ~80% of the window
+# we scale the entire physics & rendering by 4.5x so it takes up ~80% of the window
 SCALE      = 4.5  
 
 WHEELBASE  = 85.0  * SCALE
@@ -52,7 +51,8 @@ BRAKE_F    = 400.0 * SCALE
 DRAG_K     = 1.8 
 
 
-# ── Car ──────────────────────────────────────────────────────────────────────
+## car
+# big f1 car for the close-up window; same physics idea as MapCar, scaled 4.5x
 class Car:
     def __init__(self, x, y):
         self.x = float(x)
@@ -65,25 +65,26 @@ class Car:
         self.str_in = 0.0
         self.brake = False
 
-    # ── per-wheel derived values ────────────────────────────────────────────
+    ## per-wheel derived values
     @property
     def fl_steer(self): return math.degrees(self.steer)
     @property
     def fr_steer(self): return math.degrees(self.steer)
     @property
     def wheel_drive_N(self):
-        """Drive force per wheel (arbitrary unit)."""
+        """drive force per wheel (arbitrary unit)."""
         if self.brake:
             return -BRAKE_F * 0.25
         return self.thr * ACCEL * 0.25
 
+    # steering rate limit, then throttle / brake / drag, then the kinematic bicycle model
     def update(self, thr, brake, steer_dir, dt):
         self.thr    = thr
         self.brake  = brake
         self.str_in = steer_dir
 
-        # ── Steering Physics ──
-        # Wheels can only turn if the car has some speed (dry steering limitation)
+        ## steering physics
+        # wheels can only turn if the car has some speed (dry steering limitation)
         speed_factor = min(1.0, abs(self.speed) / (20.0 * SCALE)) 
         target = steer_dir * MAX_STEER
         diff   = target - self.steer
@@ -91,26 +92,26 @@ class Car:
         if abs(steer_dir) > 0.01:
             rate = STEER_RATE * speed_factor
         else:
-            # Slower return to center if stopped, normal if moving
+            # slower return to center if stopped, normal if moving
             rate = STEER_RTN * max(0.1, speed_factor) 
             
         self.steer += math.copysign(min(abs(diff), rate * dt), diff)
 
-        # ── Speed / Acceleration Physics ──
+        ## speed / acceleration physics
         if self.brake:
-            # Hard braking using spacebar
+            # hard braking using spacebar
             if self.speed > 0:
                 self.speed = max(0, self.speed - BRAKE_F * dt)
             elif self.speed < 0:
                 self.speed = min(0, self.speed + BRAKE_F * dt)
         else:
-            # Engine throttle
+            # engine throttle
             if thr > 0.01:
                 self.speed += thr * ACCEL * dt
             elif thr < -0.01:
                 self.speed -= abs(thr) * ACCEL * 0.5 * dt   # reverse / engine brake
 
-            # Rolling friction & Aero Drag
+            # rolling friction & aero drag
             drag = DRAG_K * (self.speed**2) / MAX_SPEED
             friction = 15.0 * SCALE
             total_drag = (drag + friction) * dt
@@ -122,7 +123,7 @@ class Car:
 
         self.speed  = max(-MAX_SPEED * 0.35, min(MAX_SPEED, self.speed))
 
-        # ── Kinematic bicycle model ──
+        ## kinematic bicycle model
         if abs(self.speed) > 0.1 and abs(self.steer) > 0.0005:
             R     = WHEELBASE / math.tan(self.steer)
             omega = self.speed / R
@@ -131,11 +132,12 @@ class Car:
         self.x += self.speed * math.cos(self.heading) * dt
         self.y += self.speed * math.sin(self.heading) * dt
 
+    # draws the car from polygons, rotated to its heading
     def draw(self, surf, cx, cy):
         h = self.heading
 
         def rot(lx, ly):
-            # Scale coordinates relative to car center
+            # scale coordinates relative to car center
             lx *= SCALE
             ly *= SCALE
             c, s = math.cos(h), math.sin(h)
@@ -146,7 +148,7 @@ class Car:
             if w:  pygame.draw.polygon(surf, col, ip, w)
             else:  pygame.draw.polygon(surf, col, ip)
 
-        # Base dimensions (unscaled, will be scaled inside rot())
+        # base dimensions (unscaled, will be scaled inside rot())
         FL, RL, HW = 52, 40, 21  
 
         # rear wing
@@ -194,7 +196,7 @@ class Car:
             pts = [(wc[0] + px*cw - py*sw, wc[1] + px*sw + py*cw)
                    for px, py in [(-WL,-WW),(WL,-WW),(WL,WW),(-WL,WW)]]
             poly(pts, WHL_C)
-            poly(pts, WHL_RIM, max(1, int(1 * SCALE))) # Thicker rims for scale
+            poly(pts, WHL_RIM, max(1, int(1 * SCALE))) # thicker rims for scale
 
         # velocity arrow
         if abs(self.speed) > 5 * SCALE:
@@ -205,7 +207,7 @@ class Car:
             pygame.draw.line(surf, ACCENT, (int(cx), int(cy)), (int(ax), int(ay)), int(2 * SCALE * 0.5))
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+## helpers
 def draw_grid(surf, cx, cy, spacing=int(40 * SCALE)):
     ox = int(cx % spacing)
     oy = int(cy % spacing)
@@ -228,7 +230,7 @@ def _shared_ray_color(frac):
 
 def draw_shared_rays(surf, cx, cy, heading, ray_data, max_visual=180):
     """
-    Draw rays from (cx, cy) using rel_angle+heading and frac.
+    draw rays from (cx, cy) using rel_angle+heading and frac.
     ray_data = list of [rel_angle, frac] from shared state.
     """
     for rel_angle, frac in ray_data:
@@ -272,16 +274,17 @@ def draw_wheel_box(surf, font, sf, x, y, label, steer_deg, force, is_front):
     bar(surf, x+10, y+86, BW-20, 8, force / (ACCEL * 0.25), fc)
 
 
+# right panel: per-wheel telemetry, car state and an action log
 def draw_log_panel(surf, font, sf, car, log_lines, clock):
     x0 = VIEW_W
     surf.fill(BG_LOG, (x0, 0, LOG_W, WIN_H))
     pygame.draw.line(surf, SEP, (x0, 0), (x0, WIN_H), 1)
 
-    # ── Title ──
+    ## title
     surf.blit(font.render("TELEMETRY", True, TEXT), (x0+14, 14))
     surf.blit(sf.render(f"FPS {int(clock.get_fps())}", True, HINT), (x0+LOG_W-60, 18))
 
-    # ── Wheel boxes  2×2 grid ──
+    ## wheel boxes  2×2 grid
     WX = [x0+14, x0+14+178]
     WY = [46, 168]
     labels  = ["FL","FR","RL","RR"]
@@ -294,7 +297,7 @@ def draw_log_panel(surf, font, sf, car, log_lines, clock):
         wy = WY[i // 2]
         draw_wheel_box(surf, font, sf, wx, wy, lbl, sd, fd, is_f)
 
-    # ── Car state ──
+    ## car state
     sy = 296
     surf.blit(font.render("CAR STATE", True, TEXT), (x0+14, sy))
     sy += 22
@@ -318,7 +321,7 @@ def draw_log_panel(surf, font, sf, car, log_lines, clock):
         GREEN if car.speed >= 0 else RED_C)
     sy += 22
 
-    # ── Action log ──
+    ## action log
     surf.blit(font.render("ACTION log", True, TEXT), (x0+14, sy+4))
     sy += 24
     pygame.draw.line(surf, SEP, (x0+14, sy), (x0+LOG_W-14, sy), 1)
@@ -336,11 +339,12 @@ def draw_log_panel(surf, font, sf, car, log_lines, clock):
             break
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────────────────
+## main
+# standalone: drive with wasd. with --shared <file>: mirror the car from map_reader.py
 def main():
-    # ── Shared-display mode detection ────────────────────────────
-    # When launched by map_reader.py: python car.py --shared <path>
-    # In this mode physics are replaced by reading the shared JSON file.
+    ## shared-display mode detection
+    # when launched by map_reader.py: python car.py --shared <path>
+    # in this mode physics are replaced by reading the shared json file.
     shared_file = None
     if "--shared" in sys.argv:
         idx = sys.argv.index("--shared")
@@ -399,7 +403,7 @@ def main():
 
         car.update(thr_held, brake_held, str_held, dt)
 
-        # ── In shared mode: overwrite physics state from the shared file ──
+        ## in shared mode: overwrite physics state from the shared file
         shared_rays = []
         if shared_file:
             try:
@@ -414,7 +418,7 @@ def main():
             except (OSError, json.JSONDecodeError, KeyError):
                 pass  # keep last good values
 
-        # ── logging (every ~0.3 s or on state change) ──────────────────────
+        ## logging (every ~0.3 s or on state change)
         log_timer += 1
         thr_changed = abs(thr_held - prev_thr) > 0.5
         str_changed = abs(str_held - prev_str) > 0.5
@@ -438,11 +442,11 @@ def main():
         prev_str = str_held
         prev_brake = brake_held
 
-        # ── camera: keep car centered on canvas ────────────────────────────
+        ## camera: keep car centered on canvas
         cam_x = car.x - VIEW_W // 2
         cam_y = car.y - WIN_H  // 2
 
-        # ── render canvas ──────────────────────────────────────────────────
+        ## render canvas
         canvas.fill(BG_VIEW)
         draw_grid(canvas, -cam_x, -cam_y)
         if shared_rays:

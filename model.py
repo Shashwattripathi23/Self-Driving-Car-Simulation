@@ -1,45 +1,54 @@
 """
-model.py  –  PPO Agent  (vectorised · NPZ checkpoints · fast)
-==============================================================
-Pure NumPy — no PyTorch required.
+model.py  –  ppo agent  
 
-Observation : 22 floats  (20 ray fracs + speed_norm + steer_norm)
-Actions     : 9  (COAST, THROTTLE, BRAKE, LEFT, RIGHT,
+
+observation : 22 floats  (20 ray fracs + speed_norm + steer_norm)
+actions     : 9  (COAST, throttle, brake, left, right,
                   THROTTLE_LEFT, THROTTLE_RIGHT, BRAKE_LEFT, BRAKE_RIGHT)
 """
 
 import os, json, math, time
 import numpy as np
 
-# ── Paths ──────────────────────────────────────────────────────
+## paths
 _HERE         = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR    = os.path.join(_HERE, "models")
 MANIFEST_PATH = os.path.join(MODELS_DIR, "manifest.json")
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# ── Hyper-parameters ───────────────────────────────────────────
+## hyper-parameters
+# network sizes: 22 inputs (20 rays + speed + steer), 9 actions, 128 hidden units
 OBS_DIM      = 22
 ACT_DIM      = 9
 HIDDEN       = 128
-GAMMA        = 0.995  # decisions are ~60 Hz (frame-skip), so ~3 s horizon
+# gamma = discount (how much future reward counts), lam = gae lambda (bias vs variance)
+GAMMA        = 0.995  # decisions are ~60 hz (frame-skip), so ~3 s horizon
 LAM          = 0.95
+# ppo clip: the new/old probability ratio is kept inside 0.8 - 1.2
 CLIP_EPS     = 0.2
+# adam learning rates (step sizes) for the actor and the critic
 LR_ACTOR     = 3e-4
 LR_CRITIC    = 1e-3
+# entropy bonus = reward for staying a bit random (exploration), decays from 0.05 to 0.01
 ENTROPY_COEF = 0.05
 ENTROPY_MIN  = 0.01
+# each batch of 4096 decisions is reused 4 times, split into 8 minibatches = 32 adam steps
 EPOCHS       = 4
-UPDATE_EVERY = 4096      # decisions per PPO update (notebook: 32768 = 256 cars x 128 steps)
+UPDATE_EVERY = 4096      # decisions per ppo update (notebook: 32768 = 256 cars x 128 steps)
 MINIBATCHES  = 8         # minibatches per epoch (same ratio as the notebook: 32768 / 4096)
-# Notebook decays the entropy bonus by 0.9985 per 32768 decisions; scale so the schedule
-# per DECISION is identical even though updates here are smaller.
+# notebook decays the entropy bonus by 0.9985 per 32768 decisions; scale so the schedule
+# per decision is identical even though updates here are smaller.
 ENTROPY_DECAY= 0.9985 ** (UPDATE_EVERY / 32768)
+# safety brakes: stop early if the policy changes too much, and cap the gradient size
 TARGET_KL    = 0.03      # stop an update early if the policy moved too far
 MAX_GRAD     = 0.5       # global gradient-norm clip (actor + critic together)
+# an episode ends after 30 s (1800 decisions at 60 hz); a crash gives -15
 MAX_EP_STEPS = 1800      # 30 s episode cap, treated as truncation (bootstrapped), not failure
 CRASH_PENALTY= -15.0
 
-# ── Action map ─────────────────────────────────────────────────
+## action map
+# the 9 discrete actions the policy can choose from
+# each one maps to (throttle 0-1, brake on/off, steer -1 left / 0 / +1 right)
 COAST=0; THROTTLE=1; BRAKE=2; LEFT=3; RIGHT=4
 THROTTLE_LEFT=5; THROTTLE_RIGHT=6; BRAKE_LEFT=7; BRAKE_RIGHT=8
 
@@ -55,19 +64,24 @@ ACTION_MAP = {
     BRAKE_RIGHT:    (0.0, True,  +1.0),
 }
 
-# ── Math helpers ───────────────────────────────────────────────
+## math helpers
 
+# softmax: turns raw scores into probabilities that sum to 1
+# subtracting the row max first avoids overflow in exp
 def softmax_2d(X):
     E = np.exp(X - X.max(axis=1, keepdims=True))
     return E / E.sum(axis=1, keepdims=True)
 
+# orthogonal weight init (same as pytorch); gain sets the starting scale
 def orthogonal(fi, fo, gain):
-    """Orthogonal init for a (fi, fo) weight matrix, like torch.nn.init.orthogonal_."""
+    """orthogonal init for a (fi, fo) weight matrix, like torch.nn.init.orthogonal_."""
     A = np.random.randn(max(fi, fo), min(fi, fo))
     Q, R = np.linalg.qr(A)
     Q = Q * np.sign(np.diag(R))
     return gain * (Q if fi >= fo else Q.T)
 
+# if all gradients together are longer than mx, shrink them to length mx
+# this stops one bad batch from making a huge update
 def clip_grads(gs, mx):
     norm = math.sqrt(sum(float(np.sum(g**2)) for g in gs))
     if norm > mx:
@@ -76,12 +90,15 @@ def clip_grads(gs, mx):
     return gs
 
 
+# keeps a running mean and variance of the returns
+# the critic learns normalised returns (mean 0, std 1) because raw returns are in the hundreds
 class RunningNorm:
     def __init__(self, eps=1e-4):
         self.mean  = 0.0
         self.var   = 1.0
         self.count = eps
 
+    # merge a new batch into the running stats (parallel mean / variance formula)
     def update(self, x):
         x = np.asarray(x, dtype=np.float64)
         batch_mean  = x.mean()
@@ -117,8 +134,10 @@ class RunningNorm:
         return rn
 
 
-# ── MLP ────────────────────────────────────────────────────────
+## mlp
 
+# small neural network: 22 -> 128 -> 128 -> out with tanh activations
+# used twice: the actor (9 outputs) and the critic (1 output)
 class MLP:
     def __init__(self, in_dim, hid, out_dim, out_gain=1.0):
         g = math.sqrt(2.0)
@@ -130,6 +149,8 @@ class MLP:
     def forward(self, x):
         return self.forward_batch(x[None])[0]
 
+    # forward pass: two tanh hidden layers, then a linear output layer
+    # intermediate values are cached in self._c for the backward pass
     def forward_batch(self, X):
         Z1 = X @ self.W1 + self.b1;  H1 = np.tanh(Z1)
         Z2 = H1 @ self.W2 + self.b2; H2 = np.tanh(Z2)
@@ -137,6 +158,10 @@ class MLP:
         self._c = dict(X=X, Z1=Z1, H1=H1, Z2=Z2, H2=H2)
         return out
 
+    # backward pass = the chain rule, layer by layer, written by hand
+    # d_out = gradient of the loss w.r.t. the network output, one row per sample
+    # tanh'(z) = 1 - tanh(z)^2; dividing by n gives the gradient of the mean loss
+    # returns gradients in the same order as params()
     def backward_batch(self, d_out):
         c = self._c; N = len(c['X'])
         dW3 = c['H2'].T @ d_out / N; db3 = d_out.mean(0)
@@ -163,8 +188,10 @@ class MLP:
         return m
 
 
-# ── Adam ───────────────────────────────────────────────────────
+## adam
 
+# adam optimiser = momentum (m) + a separate step size per weight (v)
+# m = running average of gradients, v = running average of squared gradients
 class Adam:
     def __init__(self, params, lr=1e-3, b1=0.9, b2=0.999, eps=1e-5):
         self.lr=lr; self.b1=b1; self.b2=b2; self.eps=eps
@@ -172,6 +199,8 @@ class Adam:
         self.v=[np.zeros_like(p) for p in params]
         self.t=0
 
+    # bc1 / bc2 = bias correction, because m and v start at zero
+    # 'p -= ...' changes the weights in place (params() returns the real arrays)
     def step(self, params, grads):
         self.t += 1
         bc1 = 1 - self.b1**self.t; bc2 = 1 - self.b2**self.t
@@ -193,13 +222,16 @@ class Adam:
         self.v = [np.array(x, dtype=np.float64) for x in d["v"]]
 
 
-# ── PPO Agent ──────────────────────────────────────────────────
+## ppo agent
 
+# the agent = actor network (policy) + critic network (value) + the ppo learning rule
 class PPOAgent:
 
     def __init__(self, max_speed=180.0, max_steer_deg=28.0):
         self.max_speed     = max_speed
         self.max_steer_deg = max_steer_deg
+        # actor: obs -> 9 action scores. tiny output gain = almost uniform policy at the start
+        # critic: obs -> 1 number, how good this state is
         self.actor  = MLP(OBS_DIM, HIDDEN, ACT_DIM, out_gain=0.01)
         self.critic = MLP(OBS_DIM, HIDDEN, 1,       out_gain=1.0)
         self.actor_opt  = Adam(self.actor.params(),  lr=LR_ACTOR)
@@ -213,55 +245,70 @@ class PPOAgent:
         self.last_critic_loss = 0.0
         self.ret_norm = RunningNorm()
 
-    # ── observation ────────────────────────────────────────────
+    # observation 
 
+    # turns sensor data into the 22-number network input:
+    # 20 ray distances (0 = wall, 1 = open road) + speed / max speed + steering angle / 28 degrees
     def build_obs(self, rays, speed, steer):
         fracs = [r['frac'] if isinstance(r, dict) else float(r)
                  for r in (rays or [])]
+        # always exactly 20 rays; missing rays count as open road
         fracs = (fracs + [1.0]*20)[:20]
         sn = float(np.clip(speed / self.max_speed, -1.0, 1.0))
         an = float(np.clip(math.degrees(steer) / self.max_steer_deg, -1.0, 1.0))
         return np.array(fracs + [sn, an], dtype=np.float64)
 
-    # ── action selection ────────────────────────────────────────
+    # action selection 
 
+    # picks an action by sampling from the policy and remembers what ppo needs later
+    # returns (action index, log-probability of that action, critic value of this state)
     def select_action(self, obs):
-        # ε-greedy: occasionally take a fully-random action so the policy
-        # keeps seeing new states even after it has mostly converged.
-        # Pure on-policy sampling (no ε-greedy: it made the data off-policy and
-        # biased the gradient). Exploration comes from the entropy bonus.
+
+        # pure on-policy sampling (no ε-greedy: it made the data off-policy and
+        # biased the gradient). exploration comes from the entropy bonus.
         logits   = self.actor.forward(obs)
         probs    = softmax_2d(logits[None])[0]
         probs    = np.clip(probs, 1e-8, 1.0); probs /= probs.sum()
+        # sample (not argmax) so the agent keeps exploring and the data stays on-policy
         action   = int(np.random.choice(len(probs), p=probs))
         log_prob = float(np.log(probs[action]))
         raw_value = float(self.critic.forward(obs)[0])
+        # the critic predicts in normalised units; convert back to real reward units
         value     = self.ret_norm.denorm(raw_value)
         return action, log_prob, value
 
     @staticmethod
+    # action number -> (throttle, brake, steer) for the car
     def action_to_controls(idx):
         assert idx in ACTION_MAP, f"Invalid action index: {idx}"
         return ACTION_MAP[idx]
 
-    # ── reward ─────────────────────────────────────────────────
+    ## reward
 
+    # reward for one decision:
+    #   + speed along the road (fwd = cos of the angle to the road), about +2.5 at top speed
+    #   - squared distance from the centre line, -1.28 right next to the wall
+    #   crash or stall = -15
     def compute_reward(self, speed, lat_norm, fwd, crashed):
-        """Same reward as the notebook.
+        """same reward as the notebook.
         lat_norm = distance from centre line / half lane width,
         fwd      = cos(angle between heading and the road direction of travel)."""
         if crashed:
             return CRASH_PENALTY
         return float(3.0 * speed * fwd / self.max_speed - 2.0 * lat_norm ** 2)
 
-    # ── GAE ────────────────────────────────────────────────────
+    ## gae
 
     @staticmethod
+    # gae: how much better each action was than the critic expected (the advantage)
+    # delta = r + gamma * v(next) - v(now)            (one-step td error)
+    # advantage = delta + gamma * lam * next advantage  (a blend of n-step returns)
+    # a done flag cuts the chain so advantages never leak across episodes
     def compute_gae(rewards, values, dones, last_val=0.0):
         """
-        rewards, values: length T lists.
-        last_val: V(s_T) — bootstrap value for the state AFTER the buffer ends.
-                  Pass 0.0 for terminal episodes; pass critic(final_obs) for
+        rewards, values: length t lists.
+        last_val: V(s_T) — bootstrap value for the state after the buffer ends.
+                  pass 0.0 for terminal episodes; pass critic(final_obs) for
                   non-terminal rollout truncation.
         """
         T = len(rewards)
@@ -272,10 +319,13 @@ class PPOAgent:
             d    = rewards[t] + GAMMA * nv * mask - values[t]
             last = d + GAMMA * LAM * mask * last
             adv[t] = last
+        # returns = advantage + value; these are the critic's targets
         return adv, adv + np.array(values[:T], dtype=np.float64)
 
-    # ── PPO update ─────────────────────────────────────────────
+    ## ppo update
 
+    # one ppo update from the buffer of collected decisions:
+    # 1) gae  2) normalise  3) 4 epochs x 8 minibatches of clipped ppo  4) stop early if kl is too big
     def update(self, buffer, last_val=0.0):
         if len(buffer) < 16:
             return 0.0, 0.0, 0.0
@@ -289,6 +339,7 @@ class PPOAgent:
             [b[5] for b in buffer],
             last_val=last_val)
 
+        # update the return stats, scale the critic targets, normalise the advantages
         self.ret_norm.update(ret)
         ret_n = self.ret_norm.norm(ret)
         adv   = (adv - adv.mean()) / (adv.std() + 1e-8)      # normalised over the whole batch
@@ -297,6 +348,7 @@ class PPOAgent:
         mb = max(N // MINIBATCHES, 16)
         ta = tc = te = nu = 0.0
 
+        # epoch loop: shuffle the batch, then walk through it in minibatches
         for _ in range(EPOCHS):
             kls = []
             perm = np.random.permutation(N)
@@ -307,7 +359,8 @@ class PPOAgent:
                 bo, ba, bl = obs[bi], acts[bi], lpo[bi]
                 bA, bR = adv[bi], ret_n[bi]
 
-                # ── Actor (per-sample gradients; backward_batch averages them) ──
+                ## actor (per-sample gradients; backward_batch averages them)
+                # new probabilities for the actions that were actually taken
                 logits = self.actor.forward_batch(bo)
                 probs  = softmax_2d(logits)
                 probs  = np.clip(probs, 1e-8, 1.0)
@@ -315,48 +368,59 @@ class PPOAgent:
 
                 lp_new = np.log(probs[np.arange(n), ba])
                 logr   = lp_new - bl
+                # ratio = new prob / old prob; rc = ratio clipped to [0.8, 1.2]
                 ratio  = np.exp(logr)
                 rc     = np.clip(ratio, 1-CLIP_EPS, 1+CLIP_EPS)
+                # estimate of how far the policy has moved (kl divergence)
                 kls.append(float(np.mean((ratio - 1.0) - logr)))
 
+                # ppo objective = min(ratio * advantage, clipped ratio * advantage)
+                # active = 1 where the unclipped term is used; where the clip kicks in the gradient is 0
                 surr1  = ratio * bA
                 surr2  = rc * bA
                 active = (surr1 <= surr2).astype(np.float64)   # 0 where the clip is binding
                 d_lp   = ratio * (-bA * active)
 
+                # chain rule through softmax: d log p(a) / d logits = onehot(a) - probs
                 d_logits = -probs.copy()
                 d_logits[np.arange(n), ba] += 1.0
                 d_logits *= d_lp[:, None]
 
+                # entropy bonus: add its gradient so the policy stays a bit random
                 ent    = -np.sum(probs * np.log(probs+1e-8), 1)
                 d_ent  = probs * (np.log(probs+1e-8) + 1.0)
                 d_ent -= d_ent.sum(1, keepdims=True) * probs    # = -dH/dz
-                d_logits += self.entropy_coef * d_ent           # loss = pg - coef*H
+                d_logits += self.entropy_coef * d_ent           # loss = pg - coef*h
 
                 aloss = float(-(np.minimum(surr1, surr2).mean()) - self.entropy_coef * ent.mean())
                 ag = self.actor.backward_batch(d_logits)
 
-                # ── Critic: 0.5 * MSE on normalised returns ──
+                ## critic: 0.5 * mse on normalised returns
+                # critic loss = 0.5 * (value - target)^2, so its gradient is (value - target)
                 vp    = self.critic.forward_batch(bo)[:, 0]
                 closs = float(0.5 * np.mean((vp - bR)**2))
                 cg    = self.critic.backward_batch((vp - bR)[:, None])
 
-                # ── One global gradient-norm clip over actor + critic, then step ──
+                ## one global gradient-norm clip over actor + critic, then step
                 clipped = clip_grads(ag + cg, MAX_GRAD)
                 self.actor_opt.step(self.actor.params(),  clipped[:len(ag)])
                 self.critic_opt.step(self.critic.params(), clipped[len(ag):])
 
                 ta += aloss; tc += closs; te += float(ent.mean()); nu += 1
 
+            # after each epoch: stop if the policy has already changed too much
             if kls and np.mean(kls) > 1.5 * TARGET_KL:          # policy moved too far: stop epochs
                 break
 
+        # slowly reduce exploration after every update
         self.entropy_coef = max(ENTROPY_MIN, self.entropy_coef * ENTROPY_DECAY)
         n = max(nu, 1)
         return ta/n, tc/n, te/n
 
-    # ── Save (.npz) ────────────────────────────────────────────
+    ## save (.npz)
 
+    # save weights, adam state, return stats and counters to models/ppo_<label>.npz
+    # and add an entry to models/manifest.json
     def save_npz(self, label=None):
         ts   = time.strftime("%Y%m%d_%H%M%S")
         name = f"ppo_{label or ts}.npz"
@@ -384,7 +448,7 @@ class PPOAgent:
             ret_norm_count   = np.array(self.ret_norm.count, dtype=np.float64),
             max_speed        = np.array(self.max_speed,       dtype=np.float64),
             max_steer_deg    = np.array(self.max_steer_deg,   dtype=np.float64),
-            # Adam state stored as JSON string in a 0-d object array
+            # adam state stored as json string in a 0-d object array
             actor_opt_state  = np.array(json.dumps(actor_opt_state),  dtype=object),
             critic_opt_state = np.array(json.dumps(critic_opt_state), dtype=object),
         )
@@ -400,9 +464,10 @@ class PPOAgent:
     def save_version(self, label=None):
         return self.save_npz(label)
 
-    # ── Load ───────────────────────────────────────────────────
+    ## load
 
     @classmethod
+    # load a checkpoint; keeps the max_speed it was trained with (inputs and rewards depend on it)
     def load_npz(cls, path):
         d = np.load(path, allow_pickle=True)
         max_speed     = float(d['max_speed'])     if 'max_speed'     in d else 180.0
@@ -426,7 +491,7 @@ class PPOAgent:
             ag.ret_norm.var   = float(d['ret_norm_var'])
             ag.ret_norm.count = float(d['ret_norm_count'])
 
-        # Restore Adam state if present (preserves optimizer momentum across saves)
+        # restore adam state if present (preserves optimizer momentum across saves)
         ag.actor_opt  = Adam(ag.actor.params(),  lr=LR_ACTOR)
         ag.critic_opt = Adam(ag.critic.params(), lr=LR_CRITIC)
         if 'actor_opt_state' in d:
@@ -434,11 +499,12 @@ class PPOAgent:
                 ag.actor_opt.load_state_dict(json.loads(str(d['actor_opt_state'])))
                 ag.critic_opt.load_state_dict(json.loads(str(d['critic_opt_state'])))
             except Exception:
-                pass   # old checkpoint without optimizer state — fresh Adam is fine
+                pass   # old checkpoint without optimizer state — fresh adam is fine
 
         return ag
 
     @classmethod
+    # loads an .npz checkpoint, or the older json format
     def load_version(cls, path):
         if path.endswith('.npz'):
             return cls.load_npz(path)
@@ -459,7 +525,7 @@ class PPOAgent:
         return ag
 
 
-# ── Manifest helpers ───────────────────────────────────────────
+## manifest helpers
 
 def _load_manifest():
     try:
@@ -471,6 +537,7 @@ def _load_manifest():
 load_manifest = _load_manifest
 
 
+# newest checkpoint listed in the manifest
 def get_latest_model_path():
     m = _load_manifest()
     if not m:
@@ -480,12 +547,14 @@ def get_latest_model_path():
     return path if os.path.exists(path) else None
 
 
-# ── PPO Trainer ────────────────────────────────────────────────
+## ppo trainer
 
+# glue between the simulator and the agent: call step() once per decision
+# it stores transitions, triggers learning and returns the next controls
 class PPOTrainer:
     """
-    Call .step(rays, speed, steer, crashed, dt) every frame.
-    Returns (throttle, brake, steer_dir).
+    call .step(rays, speed, steer, crashed, dt) every frame.
+    returns (throttle, brake, steer_dir).
     """
     def __init__(self, agent: PPOAgent):
         self.agent      = agent
@@ -510,20 +579,25 @@ class PPOTrainer:
             "running":        True,
         }
 
+    # one decision:
+    # 1) build obs  2) give the previous action its reward  3) handle the end of an episode
+    # 4) learn when the buffer is full  5) pick the next action
     def step(self, rays, speed, steer, crashed, dt, track=(0.0, 1.0),
              training_state_path=None):
-        """Call once per decision (frame).  track = (lateral offset / half lane width,
-        cos(heading vs road direction)) - used ONLY for the reward, never fed to the policy.
-        If self.reset_requested is True afterwards, respawn the car and call step() again."""
+        """call once per decision (frame).  track = (lateral offset / half lane width,
+        cos(heading vs road direction)) - used only for the reward, never fed to the policy.
+        if self.reset_requested is true afterwards, respawn the car and call step() again."""
         obs = self.agent.build_obs(rays, speed, steer)
         self.reset_requested = False
         episode_end = truncated = False
 
-        # Store previous transition (reward is for the state the last action led to)
+        # store previous transition (reward is for the state the last action led to)
+        # store the previous decision with the reward it earned (scored on the state we are in now)
         if self.last_obs is not None:
             r = self.agent.compute_reward(speed, track[0], track[1], crashed)
             self.ep_reward += r
             self.ep_steps  += 1
+            # 30 s limit: not a failure, so add the value of where we stopped (bootstrap)
             truncated = (not crashed) and self.ep_steps >= MAX_EP_STEPS
             if truncated:   # time limit is not a failure: bootstrap the value of where we stopped
                 r += GAMMA * self.agent.ret_norm.denorm(float(self.agent.critic.forward(obs)[0]))
@@ -531,6 +605,7 @@ class PPOTrainer:
             self.buffer.append((self.last_obs, self.last_act,
                                 self.last_lp, r, self.last_val, episode_end))
 
+        # episode over: update the stats, and learn if enough data was collected
         if episode_end:
             self.agent.episode     += 1
             self.agent.total_steps += self.ep_steps
@@ -562,7 +637,8 @@ class PPOTrainer:
                 self.reset_requested = True
                 return PPOAgent.action_to_controls(COAST)
 
-        # Flush buffer mid-episode if it hits UPDATE_EVERY (non-terminal truncation)
+        # flush buffer mid-episode if it hits UPDATE_EVERY (non-terminal truncation)
+        # buffer full in the middle of an episode: learn now, using v(current state) for the rest
         elif len(self.buffer) >= UPDATE_EVERY:
             raw_last_val = float(self.agent.critic.forward(obs)[0])
             last_val     = self.agent.ret_norm.denorm(raw_last_val)
@@ -575,6 +651,7 @@ class PPOTrainer:
 
         self.stats["ep_reward"] = round(self.ep_reward, 2)
 
+        # visual mode only: write the stats to a json file for the dashboard
         if training_state_path:
             try:
                 try:
@@ -588,6 +665,7 @@ class PPOTrainer:
             except OSError:
                 pass
 
+        # choose the next action and remember it for the next call
         action, lp, val = self.agent.select_action(obs)
         self.last_obs   = obs
         self.last_act   = action
