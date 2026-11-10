@@ -1,23 +1,20 @@
 """
-test_model.py  –  Autonomous Car Simulator  |  Model Tester
-════════════════════════════════════════════════════════════
-Load a trained PPO checkpoint and watch it drive on any map.
-No training happens — pure inference / deterministic mode.
+test_model.py  –  autonomous car simulator  |  model tester
+load a trained ppo checkpoint and watch it drive on any map.
+no training happens — pure inference / deterministic mode.
 
-Usage
-─────
+usage
   python test_model.py [map.json]
 
-Controls
-────────
-  O / Ctrl+O   open another map
-  R            respawn car (start new test episode)
-  ESC          quit
-  ── When model is active ──
-  Click  "Open Map"    – load .json map file
-  Click  "Spawn Car"   – place car on the road
-  Click  "Load Model"  – pick a checkpoint to drive
-  Click  "Restart"     – new episode, same spawn
+controls
+  o / ctrl+o   open another map
+  r            respawn car (start new test episode)
+  esc          quit
+  when model is active:
+  click  "open map"    – load .json map file
+  click  "spawn car"   – place car on the road
+  click  "load model"  – pick a checkpoint to drive
+  click  "restart"     – new episode, same spawn
 """
 
 import pygame
@@ -29,7 +26,7 @@ import random
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-# ── Shared simulation utilities from map_reader ─────────────────
+## shared simulation utilities from map_reader
 from map_reader import (
     load_map, MapCar, spawn_car_on_road, compute_rays,
     enforce_road_boundary, draw_road, draw_rays_map, draw_grid, track_state,
@@ -42,7 +39,7 @@ from map_reader import (
     STALL_TIMEOUT, STALL_DIST_EPS, SAFETY_OVERRIDE,
 )
 
-# ── PPO model ───────────────────────────────────────────────────
+## ppo model
 try:
     from model import PPOAgent, MODELS_DIR, MANIFEST_PATH
     HAS_MODEL = True
@@ -51,12 +48,12 @@ except ImportError:
     MODELS_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
     MANIFEST_PATH = os.path.join(MODELS_DIR, "manifest.json")
 
-# ── Sidebar layout ──────────────────────────────────────────────
+## sidebar layout
 TESTER_BTN_COL = (140, 60, 200)   # purple – distinct from trainer
 TESTER_BTN_HOV = (175, 90, 240)
 MODEL_ACT_COL  = (30, 180, 120)   # green when running
 
-# ── Helpers ─────────────────────────────────────────────────────
+## helpers
 
 def _load_manifest():
     try:
@@ -66,14 +63,15 @@ def _load_manifest():
         return []
 
 
+# popup listing the saved checkpoints from the manifest
 def _pick_model_dialog():
-    """Tkinter popup that lists available checkpoints and returns a path."""
+    """tkinter popup that lists available checkpoints and returns a path."""
     manifest = _load_manifest()
     if not manifest:
         messagebox.showwarning("No models", "No saved checkpoints found in models/.")
         return None
 
-    # Sort newest first
+    # sort newest first
     manifest = sorted(manifest, key=lambda m: m["timestamp"], reverse=True)
 
     root = tk.Tk()
@@ -141,7 +139,7 @@ def _pick_model_dialog():
     return chosen[0]
 
 
-# ── Sidebar drawing ─────────────────────────────────────────────
+## sidebar drawing
 
 def _draw_btn(surf, rect, label, font, hovered=False, active=False,
               col=None, hov=None, act_col=None):
@@ -157,7 +155,7 @@ def _draw_btn(surf, rect, label, font, hovered=False, active=False,
 
 
 def _section(surf, font, x, y, w, title, items, title_col=None):
-    """Draw a titled block of key-value rows."""
+    """draw a titled block of key-value rows."""
     if title_col is None: title_col = ACCENT_COL
     lh  = 18
     pad = 8
@@ -200,14 +198,14 @@ def draw_sidebar_test(screen, font, small_font,
 
     y = pad
 
-    # Title
+    # title
     title = font.render("MODEL TESTER", True, (200, 160, 255))
     screen.blit(title, (x0 + w // 2 - title.get_width() // 2, y))
     y += title.get_height() + 8
     pygame.draw.line(screen, (60, 40, 90), (x0 + pad, y), (x0 + w - pad, y))
     y += 8
 
-    # ── Buttons ──
+    ## buttons
     mx, my = mouse_pos
 
     OPEN_BTN.x  = x0 + pad;  OPEN_BTN.y  = y
@@ -241,7 +239,7 @@ def draw_sidebar_test(screen, font, small_font,
     pygame.draw.line(screen, (40, 40, 55), (x0 + pad, y), (x0 + w - pad, y))
     y += 8
 
-    # ── Map / model info ──
+    ## map / model info
     mf = pygame.font.SysFont("consolas", 11)
     def info_row(label, val, col=TEXT_COL):
         nonlocal y
@@ -257,7 +255,7 @@ def draw_sidebar_test(screen, font, small_font,
     pygame.draw.line(screen, (40, 40, 55), (x0 + pad, y), (x0 + w - pad, y))
     y += 8
 
-    # ── Episode stats ──
+    ## episode stats
     r_col = OK_COL if ep_reward >= 0 else ERR_COL
     items = [
         ("Episode",   ep_num,           None),
@@ -271,7 +269,7 @@ def draw_sidebar_test(screen, font, small_font,
                   "CURRENT EPISODE", items, title_col=(100, 200, 255))
     y += bh + 8
 
-    # ── Reward history sparkline ──
+    ## reward history sparkline
     if history:
         section_h = 52
         bx, by = x0 + pad, y
@@ -298,7 +296,7 @@ def draw_sidebar_test(screen, font, small_font,
 
         y += section_h + 8
 
-    # ── Status bar ──
+    ## status bar
     if status:
         sf2 = pygame.font.SysFont("consolas", 11, bold=True)
         sc  = OK_COL if not status.startswith("!") else ERR_COL
@@ -306,8 +304,9 @@ def draw_sidebar_test(screen, font, small_font,
         screen.blit(stxt, (x0 + w // 2 - stxt.get_width() // 2, WIN_H - 20))
 
 
-# ── Main ─────────────────────────────────────────────────────────
+## main
 
+# watch a trained model drive: no learning, always the best action (argmax)
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -318,7 +317,7 @@ def main():
     small_font = pygame.font.SysFont("consolas", 12)
     canvas     = pygame.Surface((CANVAS_W, WIN_H))
 
-    # ── State ──
+    ## state
     map_data   = None
     filename   = ""
     car        = None
@@ -331,7 +330,7 @@ def main():
     center_pts = []
     half_w     = 30.0
 
-    # Episode tracking
+    # episode tracking
     ep_num     = 0
     ep_steps   = 0
     ep_reward  = 0.0
@@ -342,14 +341,14 @@ def main():
     best_reward = -1e9
     reward_history = []
 
-    # Stall detection
+    # stall detection
     stall_x = stall_y = stall_timer = 0.0
 
     spawn_pos  = None          # fixed spawn for this test session
     status     = ""
     status_timer = 0
 
-    # Button rects (positioned by draw_sidebar_test each frame)
+    # button rects (positioned by draw_sidebar_test each frame)
     OPEN_BTN    = pygame.Rect(0, 0, 1, 1)
     SPAWN_BTN   = pygame.Rect(0, 0, 1, 1)
     MODEL_BTN   = pygame.Rect(0, 0, 1, 1)
@@ -358,7 +357,7 @@ def main():
     rays = []
     hold_ctrl = None
 
-    # ── Helpers ──
+    ## helpers
     def do_open_map(path):
         nonlocal map_data, filename, car, left_pts, right_pts
         nonlocal agent, model_active, model_name, status, status_timer
@@ -388,7 +387,7 @@ def main():
             c.speed   = AI_MAX_SPEED * 0.25
             car       = c
             spawn_pos = (c.x, c.y, c.heading)
-            # Reset episode
+            # reset episode
             ep_num    = 0
             ep_steps  = 0
             ep_reward = 0.0
@@ -433,11 +432,11 @@ def main():
         ep_start_x, ep_start_y = c.x, c.y
         stall_x, stall_y, stall_timer = c.x, c.y, 0.0
 
-    # ── CLI map ──
+    ## cli map
     if len(sys.argv) > 1:
         do_open_map(sys.argv[1])
 
-    # ── Main loop ──
+    ## main loop
     while True:
         dt = min(clock.tick(FPS) / 1000.0, 0.05)
 
@@ -483,18 +482,19 @@ def main():
                         status = f"! {e}"
                         status_timer = 240
 
-        # ── Simulation step ──
+        ## simulation step
         if car and left_pts and right_pts:
             sub_dt = dt / AI_SUBSTEPS
             for _sub in range(AI_SUBSTEPS):
                 rays = compute_rays(car, left_pts, right_pts)
 
-                # Frame-skip: decide once per frame (as in training), hold between.
+                # frame-skip: decide once per frame (as in training), hold between.
                 if _sub == 0 or hold_ctrl is None:
                     if agent and model_active:
                         obs    = agent.build_obs(rays, car.speed, car.steer)
-                        # ── Greedy / deterministic inference ──
+                        ## greedy / deterministic inference
                         import numpy as np
+                        # greedy: pick the highest-scoring action instead of sampling
                         logits = agent.actor.forward(obs)
                         action = int(np.argmax(logits))     # always best action
                         hold_ctrl = agent.action_to_controls(action)
@@ -502,7 +502,7 @@ def main():
                         hold_ctrl = (0.0, False, 0.0)
                 thr, brake, steer_cmd = hold_ctrl
 
-                # Counter-steer safety override (same as trainer)
+                # counter-steer safety override (same as trainer)
                 if SAFETY_OVERRIDE and rays and steer_cmd != 0.0:
                     WALL_CRITICAL = 0.12
                     front = rays[:10]   # front arc only (RAY_N), same as trainer
@@ -518,20 +518,20 @@ def main():
                 enforce_road_boundary(car, left_pts, right_pts, margin=6)
                 crashed = (car.x != old_x or car.y != old_y)
 
-                # Accumulate episode stats
+                # accumulate episode stats
                 ep_steps += 1
                 ep_dist  += math.hypot(car.x - ep_start_x,
                                        car.y - ep_start_y)
                 ep_start_x, ep_start_y = car.x, car.y
 
-                # Reward display: same formula as training (per decision = 1/AI_SUBSTEPS per substep)
+                # reward display: same formula as training (per decision = 1/AI_SUBSTEPS per substep)
                 if len(center_pts) > 1:
                     lat_n, fwd = track_state(car, center_pts, half_w)
                     ms = agent.max_speed if agent else AI_MAX_SPEED
                     r_step = -15.0 if crashed else 3.0 * car.speed * fwd / ms - 2.0 * lat_n ** 2
                     ep_reward += r_step / AI_SUBSTEPS
 
-                # Stall detection
+                # stall detection
                 moved = math.hypot(car.x - stall_x, car.y - stall_y)
                 if moved >= STALL_DIST_EPS:
                     stall_x, stall_y, stall_timer = car.x, car.y, 0.0
@@ -542,8 +542,9 @@ def main():
                         stall_timer = 0.0
 
                 if crashed:
-                    # Record episode and reset
+                    # record episode and reset
                     ep_num    += 1
+                    # record the finished episode, then respawn at the same spot
                     reward_history.append(round(ep_reward, 1))
                     if ep_steps  > best_steps:  best_steps  = ep_steps
                     if ep_reward > best_reward: best_reward = ep_reward
@@ -564,13 +565,13 @@ def main():
                     rays = []
                     break   # restart substep loop with fresh car
 
-        # ── Status timer ──
+        ## status timer
         if status_timer > 0:
             status_timer -= 1
         else:
             status = ""
 
-        # ── Render ──
+        ## render
         canvas.fill(BG)
         draw_grid(canvas)
 
@@ -587,7 +588,7 @@ def main():
                 draw_rays_map(canvas, car, rays)
             car.draw(canvas)
 
-            # Speed / steer overlay (top-left of canvas)
+            # speed / steer overlay (top-left of canvas)
             of = pygame.font.SysFont("consolas", 11)
             spd_c = OK_COL if car.speed > 0 else HINT_COL
             for li, txt in enumerate([
